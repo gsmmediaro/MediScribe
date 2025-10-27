@@ -12,7 +12,7 @@ const App: React.FC = () => {
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState<boolean>(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
+
   const [patientName, setPatientName] = useState<string>('');
   const [patientCnp, setPatientCnp] = useState<string>('');
 
@@ -22,12 +22,15 @@ const App: React.FC = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
-  
-  // Referință nouă pentru inputul de fișier
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Funcția de procesare (trimitere la n8n) - refactorizată pentru a fi reutilizabilă
-  const processAudio = async (audioBlob: Blob, fileName: string) => {
+  // Funcția de procesare primește acum numele/cnp ca argumente
+  const processAudio = useCallback(async (
+      audioBlob: Blob,
+      fileName: string,
+      pName: string, // Argument nou
+      pCnp: string   // Argument nou
+    ) => {
     setIsLoadingAnalysis(true);
     setError(null);
 
@@ -36,21 +39,20 @@ const App: React.FC = () => {
         setIsLoadingAnalysis(false);
         return;
     }
-    
-    if (!patientName.trim()) {
+
+    // Folosim argumentele funcției
+    if (!pName.trim()) {
         setError("Te rugăm să introduci numele pacientului înainte de a procesa.");
         setIsLoadingAnalysis(false);
         return;
     }
 
-    // 1. Crează FormData pentru a trimite fișierul
     const formData = new FormData();
     formData.append('data', audioBlob, fileName);
-    formData.append('patient_name', patientName);
-    formData.append('patient_cnp', patientCnp);
+    formData.append('patient_name', pName); // Folosim argumentul
+    formData.append('patient_cnp', pCnp);   // Folosim argumentul
 
     try {
-      // 2. Trimite la n8n
       const response = await fetch(N8N_WEBHOOK_URL, {
         method: 'POST',
         body: formData
@@ -61,16 +63,17 @@ const App: React.FC = () => {
         throw new Error(`Eroare de la serverul n8n (${response.status}): ${errText}`);
       }
 
-      // 3. Primește JSON-ul final de la n8n
       const result = await response.json();
-      
-      if (Array.isArray(result) && result[0]?.json) {
-          setAnalysisResult(result[0].json);
-      } else if (result.json) {
-          setAnalysisResult(result.json);
-      } else {
-          setAnalysisResult(result);
-      }
+
+      // Adăugăm numele/cnp la rezultat pentru a-l pasa la AnalysisView
+      const finalResult = {
+          ...(Array.isArray(result) && result[0]?.json ? result[0].json : result.json ? result.json : result),
+          patientName: pName,
+          patientCnp: pCnp
+      };
+
+      setAnalysisResult(finalResult);
+
 
     } catch (err: any) {
       console.error("Failed to process recording:", err);
@@ -78,16 +81,19 @@ const App: React.FC = () => {
     } finally {
       setIsLoadingAnalysis(false);
     }
-  };
+    // Adăugăm N8N_WEBHOOK_URL ca dependență, deoarece este folosit în interior
+  }, [N8N_WEBHOOK_URL]);
 
 
   // --- Logica de Înregistrare ---
+  // Scoatem patientName și patientCnp din dependențe
   const handleStartTranscription = useCallback(async () => {
     setError(null);
     setAnalysisResult(null);
     setIsRecording(true);
     audioChunksRef.current = [];
 
+    // Citim starea curentă direct aici
     if (!patientName.trim()) {
         setError("Te rugăm să introduci numele pacientului înainte de a începe.");
         setIsRecording(false);
@@ -97,21 +103,23 @@ const App: React.FC = () => {
     try {
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorderRef.current = new MediaRecorder(streamRef.current);
-      
+
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
+      // Când se oprește, apelează processAudio cu starea curentă
       mediaRecorderRef.current.onstop = () => {
         if (audioChunksRef.current.length === 0) {
           setError("Nu a fost înregistrat niciun sunet.");
-          setIsLoadingAnalysis(false);
+          setIsLoadingAnalysis(false); // Oprim loading-ul dacă nu e audio
           return;
         }
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        processAudio(audioBlob, 'consultatie-live.webm');
+        // Pasăm starea curentă patientName și patientCnp
+        processAudio(audioBlob, 'consultatie-live.webm', patientName, patientCnp);
       };
 
       mediaRecorderRef.current.start();
@@ -121,16 +129,18 @@ const App: React.FC = () => {
       setError(`Nu am putut accesa microfonul: ${err.message}`);
       setIsRecording(false);
     }
-  }, [patientName, patientCnp]); // Adăugat dependențe
+  // Am scos dependențele [patientName, patientCnp]
+  // Adăugăm processAudio ca dependență, deoarece e folosit în onstop
+  }, [processAudio, patientName, patientCnp]); // Re-adăugăm dependențele aici pentru verificarea din start
 
   const handleStopTranscription = useCallback(() => {
     setIsRecording(false);
-    setIsLoadingAnalysis(true); 
-    
+    setIsLoadingAnalysis(true);
+
     if (mediaRecorderRef.current) {
       mediaRecorderRef.current.stop();
     }
-    
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
     }
@@ -138,31 +148,28 @@ const App: React.FC = () => {
 
   // --- Logica de Upload ---
   const triggerFileUpload = () => {
-    // Deschide fereastra de selecție fișier
     fileInputRef.current?.click();
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
       return;
     }
 
-    // Verifică dacă numele pacientului este completat
     if (!patientName.trim()) {
         setError("Te rugăm să introduci numele pacientului înainte de a încărca un fișier.");
-        // Resetează inputul de fișier pentru a putea selecta același fișier din nou
         if(fileInputRef.current) fileInputRef.current.value = "";
         return;
     }
-    
-    // Procesează fișierul selectat
-    processAudio(file, file.name);
-    
-    // Resetează inputul de fișier
+
+    // Pasăm starea curentă patientName și patientCnp
+    processAudio(file, file.name, patientName, patientCnp);
+
     if(fileInputRef.current) fileInputRef.current.value = "";
-  };
-  
+    // Adăugăm dependențele necesare
+  }, [processAudio, patientName, patientCnp]);
+
   // --- Reset ---
   const handleReset = () => {
     setAnalysisResult(null);
@@ -173,16 +180,15 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen text-gray-800 dark:text-gray-200 flex flex-col items-center p-4 sm:p-6 md:p-8">
-      
-      {/* Input de fișier ascuns */}
-      <input 
+
+      <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileUpload}
         accept="audio/*"
-        style={{ display: 'none' }} 
+        style={{ display: 'none' }}
       />
-      
+
       <Header />
       <main className="w-full max-w-4xl flex-grow flex flex-col">
         {error && (
@@ -191,8 +197,9 @@ const App: React.FC = () => {
             <span className="block sm:inline ml-2">{error}</span>
           </div>
         )}
-        
+
         {analysisResult ? (
+          // Pasăm și numele/cnp către AnalysisView dacă vrem să le afișăm acolo (ex: pe rețetă)
           <AnalysisView result={analysisResult} onReset={handleReset} />
         ) : (
           <>
@@ -201,7 +208,14 @@ const App: React.FC = () => {
                  <InfoIcon className="w-16 h-16 mx-auto mb-4" />
                  <h2 className="text-xl font-semibold mb-2">Asistent Medical AI</h2>
                  { isLoadingAnalysis ? (
-                    <p>Se procesează consultația... (Deepgram + Gemini)</p>
+                    <div>
+                      <p>Se procesează consultația...</p>
+                      <ul className="text-sm mt-2 list-none">
+                          <li className="opacity-50">📤 Trimitere audio...</li>
+                          <li className="opacity-50 animate-pulse">🎧 Transcriere Deepgram...</li>
+                          <li className="opacity-50 animate-pulse delay-500">🤖 Analiză Gemini...</li>
+                      </ul>
+                    </div>
                  ) : isRecording ? (
                     <p>Înregistrare în curs... Apasă 'Stop' pentru a procesa.</p>
                  ) : (
@@ -217,8 +231,8 @@ const App: React.FC = () => {
                           <label htmlFor="patientName" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             Nume Pacient <span className="text-red-500">*</span>
                           </label>
-                          <input 
-                              type="text" id="patientName" value={patientName} 
+                          <input
+                              type="text" id="patientName" value={patientName}
                               onChange={(e) => setPatientName(e.target.value)}
                               placeholder="ex: Popescu Ion"
                               className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
@@ -228,8 +242,8 @@ const App: React.FC = () => {
                           <label htmlFor="patientCnp" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             CNP Pacient
                           </label>
-                          <input 
-                              type="text" id="patientCnp" value={patientCnp} 
+                          <input
+                              type="text" id="patientCnp" value={patientCnp}
                               onChange={(e) => setPatientCnp(e.target.value)}
                               placeholder="ex: 1900101123456"
                               className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
@@ -244,13 +258,13 @@ const App: React.FC = () => {
               isLoading={isLoadingAnalysis}
               onStart={handleStartTranscription}
               onStop={handleStopTranscription}
-              onUploadClick={triggerFileUpload} // Am adăugat prop-ul nou
+              onUploadClick={triggerFileUpload}
             />
           </>
         )}
       </main>
        <footer className="text-center mt-8 text-gray-500 dark:text-gray-400 text-sm">
-        <p>&copy; {new Date().getFullYear()} Asistent Medical Transcriere. Construit cu n8n, Deepgram & Gemini.</p>
+        <p>&copy; {new Date().getFullYear()} MediScribe. Accelereaza procesele medicale.</p>
       </footer>
     </div>
   );
