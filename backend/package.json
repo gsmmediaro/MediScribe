@@ -1,0 +1,28 @@
+{
+  "name": "mediscribe-backend",
+  "version": "1.0.0",
+  "description": "Backend service for MediScribe - handles audio upload and n8n webhook integration",
+  "main": "backend-service.js",
+  "type": "module",
+  "scripts": {
+    "start": "node backend-service.js",
+    "dev": "node --watch backend-service.js",
+    "test": "node test-backend.js"
+  },
+  "keywords": [
+    "medical",
+    "transcription",
+    "n8n",
+    "deepgram"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^3.3.2",
+    "form-data": "^4.0.0",
+    "dotenv": "^16.3.1"
+  }
+}

@@ -1,153 +1,117 @@
 
-import React, { useState, useRef, useCallback } from 'react';
-import { generateMedicalAnalysis, startLiveTranscription } from './services/geminiService';
-import type { AnalysisResult, LiveSession, TranscriptLine } from './types';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { startAudioRecording, stopAudioRecording, checkAudioRecordingSupport, type AudioRecordingSession } from './services/audioRecordingService';
+import type { AnalysisResult, TranscriptLine } from './types';
 import Header from './components/Header';
 import Controls from './components/Controls';
 import TranscriptionView from './components/TranscriptionView';
 import AnalysisView from './components/AnalysisView';
 import { InfoIcon } from './components/Icons';
 
-const diarizeSpeaker = (text: string): 'Doctor' | 'Pacient' => {
-  const doctorKeywords = [
-    'doamnă',
-    'domnule',
-    'vă prescriu',
-    'aveți nevoie de',
-    'recomand',
-    'rețetă',
-    'tratament',
-    'diagnostic'
-  ];
-  const lowerText = text.toLowerCase();
-  
-  if (doctorKeywords.some(keyword => lowerText.includes(keyword))) {
-    if ((lowerText.includes('domnule') || lowerText.includes('doamnă')) && lowerText.includes('doctor')) {
-        if (text.split(' ').length < 5) return 'Pacient';
-    }
-    return 'Doctor';
-  }
-  
-  return 'Pacient';
-};
-
-
 const App: React.FC = () => {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState<boolean>(false);
+  const [recordingDuration, setRecordingDuration] = useState<number>(0);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
-  const [interimTranscript, setInterimTranscript] = useState<string>('');
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [speakerMode, setSpeakerMode] = useState<'auto' | 'manual'>('auto');
   const [manualSpeaker, setManualSpeaker] = useState<'Doctor' | 'Pacient'>('Pacient');
 
+  const recordingSessionRef = useRef<AudioRecordingSession | null>(null);
 
-  const sessionRef = useRef<LiveSession | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  // Check browser support on mount
+  useEffect(() => {
+    const support = checkAudioRecordingSupport();
+    if (!support.supported) {
+      setError(support.error || 'Audio recording not supported');
+    }
+  }, []);
 
   const handleStartTranscription = useCallback(async () => {
     setError(null);
     setAnalysisResult(null);
     setTranscript([]);
-    setInterimTranscript('');
+    setRecordingDuration(0);
     setIsRecording(true);
 
     try {
-      const { session, stream, context, processor, source } = await startLiveTranscription(
-        (newTranscript, isFinal) => {
-          if (isFinal) {
-            const trimmedText = newTranscript.trim();
-            if (trimmedText) {
-                const speaker = speakerMode === 'auto' ? diarizeSpeaker(trimmedText) : manualSpeaker;
-                setTranscript((prev) => [...prev, { speaker, text: trimmedText }]);
-            }
-            setInterimTranscript('');
-          } else {
-            setInterimTranscript(newTranscript);
-          }
-        }
-      );
+      console.log('🎙️ Starting audio recording...');
 
-      sessionRef.current = session;
-      streamRef.current = stream;
-      audioContextRef.current = context;
-      processorRef.current = processor;
-      mediaStreamSourceRef.current = source;
+      const session = await startAudioRecording((seconds) => {
+        setRecordingDuration(seconds);
+      });
+
+      recordingSessionRef.current = session;
+      console.log('✅ Recording started successfully');
 
     } catch (err) {
-      console.error("Failed to start transcription:", err);
-      setError("Nu am putut accesa microfonul. Vă rugăm verificați permisiunile.");
+      console.error('❌ Failed to start recording:', err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Nu am putut accesa microfonul. Vă rugăm verificați permisiunile.'
+      );
       setIsRecording(false);
     }
-  }, [speakerMode, manualSpeaker]);
+  }, []);
 
   const handleStopTranscription = useCallback(async () => {
-    setIsRecording(false);
-    
-    if (processorRef.current && audioContextRef.current && mediaStreamSourceRef.current) {
-        mediaStreamSourceRef.current.disconnect();
-        processorRef.current.disconnect();
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-    }
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      await audioContextRef.current.close();
-    }
-    if (sessionRef.current) {
-        sessionRef.current.close();
-    }
-    
-    sessionRef.current = null;
-    streamRef.current = null;
-    audioContextRef.current = null;
-    processorRef.current = null;
-    mediaStreamSourceRef.current = null;
-
-    const finalInterimText = interimTranscript.trim();
-    let finalTranscriptForApi = [...transcript];
-
-    if (finalInterimText) {
-        const speaker = speakerMode === 'auto' ? diarizeSpeaker(finalInterimText) : manualSpeaker;
-        const finalLine = { speaker, text: finalInterimText };
-        finalTranscriptForApi.push(finalLine);
-        // Update state for UI consistency
-        setTranscript(prev => [...prev, finalLine]);
-        setInterimTranscript('');
-    }
-
-    if (finalTranscriptForApi.length === 0) {
-      setError("Nu a fost înregistrat niciun sunet pentru analiză.");
+    if (!recordingSessionRef.current) {
+      setError('No active recording session');
       return;
     }
-    
+
+    setIsRecording(false);
     setIsLoadingAnalysis(true);
     setError(null);
-    
-    const finalTranscriptString = finalTranscriptForApi
-      .map(line => `${line.speaker}: ${line.text}`)
-      .join('\n');
 
     try {
-      const result = await generateMedicalAnalysis(finalTranscriptString);
+      console.log('⏹️ Stopping recording and processing...');
+
+      const result = await stopAudioRecording(recordingSessionRef.current);
+
+      console.log('✅ Analysis received:', result);
       setAnalysisResult(result);
+
+      // Extract transcript from result if available
+      // n8n may include transcription in response
+      if (result.raportSOAP) {
+        // Create a formatted transcript from SOAP report
+        const transcriptLines: TranscriptLine[] = [
+          { speaker: 'Pacient', text: result.raportSOAP.Subiectiv },
+          { speaker: 'Doctor', text: result.raportSOAP.Obiectiv },
+          { speaker: 'Doctor', text: result.raportSOAP.Analiza },
+          { speaker: 'Doctor', text: result.raportSOAP.Plan }
+        ];
+        setTranscript(transcriptLines);
+      }
+
     } catch (err) {
-      console.error("Failed to generate analysis:", err);
-      setError("A apărut o eroare la generarea analizei. Vă rugăm încercați din nou.");
+      console.error('❌ Failed to process recording:', err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'A apărut o eroare la procesarea înregistrării. Vă rugăm încercați din nou.'
+      );
     } finally {
       setIsLoadingAnalysis(false);
+      recordingSessionRef.current = null;
     }
-  }, [transcript, interimTranscript, speakerMode, manualSpeaker]);
-  
+  }, []);
+
   const handleReset = () => {
     setAnalysisResult(null);
     setTranscript([]);
-    setInterimTranscript('');
+    setRecordingDuration(0);
     setError(null);
+  };
+
+  // Format duration as MM:SS
+  const formatDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   return (
@@ -160,21 +124,62 @@ const App: React.FC = () => {
             <span className="block sm:inline ml-2">{error}</span>
           </div>
         )}
-        
+
         {analysisResult ? (
           <AnalysisView result={analysisResult} onReset={handleReset} />
         ) : (
           <>
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 flex-grow flex flex-col">
-              {transcript.length === 0 && !interimTranscript && !isRecording && !isLoadingAnalysis ? (
+              {!isRecording && !isLoadingAnalysis ? (
                 <div className="m-auto text-center text-gray-500 dark:text-gray-400">
-                   <InfoIcon className="w-16 h-16 mx-auto mb-4" />
-                   <h2 className="text-xl font-semibold mb-2">Asistent Medical AI</h2>
-                   <p>Apăsați 'Start Transcriere' pentru a începe înregistrarea consultației.</p>
-                   <p className="text-sm mt-2">Alegeți modul de diarizare (automat sau manual) de mai jos.</p>
+                  <InfoIcon className="w-16 h-16 mx-auto mb-4" />
+                  <h2 className="text-xl font-semibold mb-2">Asistent Medical AI</h2>
+                  <p>Apăsați 'Start Înregistrare' pentru a începe înregistrarea consultației.</p>
+                  <p className="text-sm mt-2">
+                    Înregistrarea va fi trimisă pentru transcriere și analiză medicală automată.
+                  </p>
+                </div>
+              ) : isLoadingAnalysis ? (
+                <div className="m-auto text-center">
+                  <div className="inline-block animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                  <h2 className="text-xl font-semibold mb-2">Procesare în curs...</h2>
+                  <p className="text-gray-600 dark:text-gray-400">
+                    Se transcrie și analizează înregistrarea (10-30 secunde)
+                  </p>
+                  <div className="mt-4 space-y-2 text-left max-w-md mx-auto text-sm text-gray-500">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                      <span>Transcriere audio cu Deepgram...</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                      <span>Identificare vorbitori...</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></div>
+                      <span>Analiză medicală cu Gemini AI...</span>
+                    </div>
+                  </div>
                 </div>
               ) : (
-                <TranscriptionView transcript={transcript} interimTranscript={interimTranscript} />
+                <div className="m-auto text-center">
+                  <div className="inline-block mb-4">
+                    <div className="relative">
+                      <div className="w-24 h-24 rounded-full bg-red-100 dark:bg-red-900 flex items-center justify-center">
+                        <div className="w-4 h-4 bg-red-500 rounded-full animate-pulse"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <h2 className="text-3xl font-bold mb-2 text-red-600 dark:text-red-400">
+                    {formatDuration(recordingDuration)}
+                  </h2>
+                  <p className="text-gray-600 dark:text-gray-400">
+                    Înregistrare în curs... Vorbiți clar în microfon.
+                  </p>
+                  <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">
+                    Apăsați 'Stop' când ați terminat consultația.
+                  </p>
+                </div>
               )}
             </div>
             <Controls
@@ -190,8 +195,8 @@ const App: React.FC = () => {
           </>
         )}
       </main>
-       <footer className="text-center mt-8 text-gray-500 dark:text-gray-400 text-sm">
-        <p>&copy; {new Date().getFullYear()} Asistent Medical Transcriere. Construit cu Gemini API.</p>
+      <footer className="text-center mt-8 text-gray-500 dark:text-gray-400 text-sm">
+        <p>&copy; {new Date().getFullYear()} MediScribe - Asistent Medical cu AI. Powered by n8n + Deepgram + Gemini.</p>
       </footer>
     </div>
   );
