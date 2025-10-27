@@ -1,0 +1,7 @@
+{
+  "name": "MediScribe",
+  "description": "O aplicație pentru transcrierea în timp real a consultațiilor medicale și generarea de rezumate, rapoarte SOAP și recomandări pentru medicii din România.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
