@@ -1,7 +1,10 @@
-export interface TranscriptLine {
-  speaker: 'Doctor' | 'Pacient';
-  text: string;
-}
+// @/types.ts
+
+// TranscriptLine nu mai este folosit
+// export interface TranscriptLine {
+//   speaker: 'Doctor' | 'Pacient';
+//   text: string;
+// }
 
 export interface SoapReport {
   Subiectiv: string;
@@ -24,7 +27,8 @@ export interface AnalysisResult {
   reteta: Reteta;
 }
 
-export interface LiveSession {
-  sendRealtimeInput: (input: { media: { data: string; mimeType: string; }; }) => void;
-  close: () => void;
-}
+// LiveSession nu mai este folosit
+// export interface LiveSession {
+//   sendRealtimeInput: (input: { media: { data: string; mimeType: string; }; }) => void;
+//   close: () => void;
+// }
