@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { AnalysisResult } from '../types';
 import { ClipboardIcon, ClipboardCheckIcon, RefreshCwIcon, PrinterIcon, UploadCloudIcon } from './Icons';
+import MetadataView from './MetadataView';
+import { config } from '../config';
 
 interface AnalysisViewProps {
   result: AnalysisResult;
@@ -152,14 +154,36 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, onReset }) => {
                                 </div>
                                 <div>
                                     <h4 className="font-semibold text-lg mb-2">Medicație Prescrisă:</h4>
-                                    <ul className="list-decimal list-inside pl-4 space-y-1">
-                                    {result.reteta.medicatie.map((med, i) => <li key={i}>{med}</li>)}
-                                    </ul>
+                                    {result.prescriptions && result.prescriptions.length > 0 ? (
+                                        // Enhanced prescriptions from n8n
+                                        <div className="space-y-4">
+                                            {result.prescriptions.map((presc, i) => (
+                                                <div key={i} className="border-l-4 border-blue-400 pl-4 py-2 bg-blue-50 dark:bg-blue-900/20 rounded-r">
+                                                    <p className="font-semibold">{i + 1}. {presc.medicament} - {presc.doza}</p>
+                                                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                                                        Frecvență: {presc.frecventa} | Durată: {presc.duratie}
+                                                    </p>
+                                                    {presc.instructiuni && (
+                                                        <p className="text-sm italic text-gray-500 dark:text-gray-400">
+                                                            {presc.instructiuni}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        // Fallback to simple list
+                                        <ul className="list-decimal list-inside pl-4 space-y-1">
+                                            {result.reteta.medicatie.map((med, i) => <li key={i}>{med}</li>)}
+                                        </ul>
+                                    )}
                                 </div>
-                                <div>
-                                    <h4 className="font-semibold text-lg mb-2">Instrucțiuni:</h4>
-                                    <p className="whitespace-pre-wrap pl-4">{result.reteta.instructiuni}</p>
-                                </div>
+                                {!result.prescriptions && (
+                                    <div>
+                                        <h4 className="font-semibold text-lg mb-2">Instrucțiuni:</h4>
+                                        <p className="whitespace-pre-wrap pl-4">{result.reteta.instructiuni}</p>
+                                    </div>
+                                )}
                                 <div className="pt-10 mt-10">
                                     <div className="flex justify-between items-end">
                                     <p><strong>Data:</strong> {new Date().toLocaleDateString('ro-RO')}</p>
@@ -237,6 +261,32 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, onReset }) => {
                 Consultație Nouă
             </button>
         </div>
+
+        {/* Medical Alerts from n8n */}
+        {result.alerts && result.alerts.length > 0 && (
+            <div className="mb-4 bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 p-4 rounded-r-lg">
+                <div className="flex items-start">
+                    <div className="flex-shrink-0">
+                        <svg className="h-5 w-5 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                    </div>
+                    <div className="ml-3">
+                        <h3 className="text-sm font-medium text-red-800 dark:text-red-200">Alerte Medicale</h3>
+                        <ul className="mt-2 text-sm text-red-700 dark:text-red-300 list-disc list-inside">
+                            {result.alerts.map((alert, idx) => (
+                                <li key={idx}>{alert}</li>
+                            ))}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* Enhanced Metadata from n8n workflow */}
+        {config.features.showQualityMetrics && result.metadata && (
+            <MetadataView metadata={result.metadata} />
+        )}
       <div className="border-b border-gray-200 dark:border-gray-700 mb-4">
         <nav className="-mb-px flex space-x-6 overflow-x-auto" aria-label="Tabs">
           {tabs.map((tab) => (

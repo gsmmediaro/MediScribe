@@ -1,6 +1,8 @@
 
 import React, { useState, useRef, useCallback } from 'react';
-import { generateMedicalAnalysis, startLiveTranscription } from './services/geminiService';
+import { startLiveTranscription } from './services/geminiService';
+import { generateMedicalAnalysisViaN8n } from './services/n8nService';
+import { config } from './config';
 import type { AnalysisResult, LiveSession, TranscriptLine } from './types';
 import Header from './components/Header';
 import Controls from './components/Controls';
@@ -49,6 +51,10 @@ const App: React.FC = () => {
   const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // MediaRecorder for capturing audio blob to send to n8n
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
   const handleStartTranscription = useCallback(async () => {
     setError(null);
     setAnalysisResult(null);
@@ -57,6 +63,7 @@ const App: React.FC = () => {
     setIsRecording(true);
 
     try {
+      // Start live transcription with Gemini for real-time feedback
       const { session, stream, context, processor, source } = await startLiveTranscription(
         (newTranscript, isFinal) => {
           if (isFinal) {
@@ -78,6 +85,23 @@ const App: React.FC = () => {
       processorRef.current = processor;
       mediaStreamSourceRef.current = source;
 
+      // Also start MediaRecorder to capture audio blob for n8n
+      if (config.features.useN8nForAnalysis) {
+        audioChunksRef.current = [];
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm', // or 'audio/wav' if supported
+        });
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        mediaRecorder.start(1000); // Collect data every 1 second
+        mediaRecorderRef.current = mediaRecorder;
+      }
+
     } catch (err) {
       console.error("Failed to start transcription:", err);
       setError("Nu am putut accesa microfonul. Vă rugăm verificați permisiunile.");
@@ -87,7 +111,12 @@ const App: React.FC = () => {
 
   const handleStopTranscription = useCallback(async () => {
     setIsRecording(false);
-    
+
+    // Stop MediaRecorder first
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+
     if (processorRef.current && audioContextRef.current && mediaStreamSourceRef.current) {
         mediaStreamSourceRef.current.disconnect();
         processorRef.current.disconnect();
@@ -101,7 +130,7 @@ const App: React.FC = () => {
     if (sessionRef.current) {
         sessionRef.current.close();
     }
-    
+
     sessionRef.current = null;
     streamRef.current = null;
     audioContextRef.current = null;
@@ -124,22 +153,36 @@ const App: React.FC = () => {
       setError("Nu a fost înregistrat niciun sunet pentru analiză.");
       return;
     }
-    
+
     setIsLoadingAnalysis(true);
     setError(null);
-    
-    const finalTranscriptString = finalTranscriptForApi
-      .map(line => `${line.speaker}: ${line.text}`)
-      .join('\n');
 
     try {
-      const result = await generateMedicalAnalysis(finalTranscriptString);
-      setAnalysisResult(result);
+      // Use n8n backend for enhanced analysis
+      if (config.features.useN8nForAnalysis && audioChunksRef.current.length > 0) {
+        // Create audio blob from recorded chunks
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        console.log('Sending audio blob to n8n:', audioBlob.size, 'bytes');
+
+        const result = await generateMedicalAnalysisViaN8n(audioBlob);
+        setAnalysisResult(result);
+      } else {
+        // Fallback: Use Gemini directly (original method)
+        const { generateMedicalAnalysis } = await import('./services/geminiService');
+        const finalTranscriptString = finalTranscriptForApi
+          .map(line => `${line.speaker}: ${line.text}`)
+          .join('\n');
+        const result = await generateMedicalAnalysis(finalTranscriptString);
+        setAnalysisResult(result);
+      }
     } catch (err) {
       console.error("Failed to generate analysis:", err);
       setError("A apărut o eroare la generarea analizei. Vă rugăm încercați din nou.");
     } finally {
       setIsLoadingAnalysis(false);
+      // Clean up
+      mediaRecorderRef.current = null;
+      audioChunksRef.current = [];
     }
   }, [transcript, interimTranscript, speakerMode, manualSpeaker]);
   

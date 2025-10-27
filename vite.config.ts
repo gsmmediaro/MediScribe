@@ -11,8 +11,15 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [react()],
       define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        // Gemini API Key (for live transcription)
+        'process.env.API_KEY': JSON.stringify(env.API_KEY || env.GEMINI_API_KEY),
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+
+        // n8n Webhook URL (for backend processing)
+        'process.env.N8N_WEBHOOK_URL': JSON.stringify(env.N8N_WEBHOOK_URL),
+
+        // Optional: Deepgram API Key
+        'process.env.DEEPGRAM_API_KEY': JSON.stringify(env.DEEPGRAM_API_KEY),
       },
       resolve: {
         alias: {
