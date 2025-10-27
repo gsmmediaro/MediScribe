@@ -1,52 +1,93 @@
 // @/App.tsx
 
 import React, { useState, useRef, useCallback } from 'react';
-// Importurile pentru serviciul Gemini nu mai sunt necesare
-import type { AnalysisResult } from './types'; // Am scos TranscriptLine și LiveSession
+import type { AnalysisResult } from './types';
 import Header from './components/Header';
 import Controls from './components/Controls';
-// TranscriptionView nu mai este folosit
 import AnalysisView from './components/AnalysisView';
 import { InfoIcon } from './components/Icons';
-
-// Funcția diarizeSpeaker nu mai este necesară, o ștergem.
 
 const App: React.FC = () => {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState<boolean>(false);
-  
-  // Am scos 'transcript' și 'interimTranscript'
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   
-  // Am scos 'speakerMode' și 'manualSpeaker'
-  
-  // Stări noi pentru datele pacientului
   const [patientName, setPatientName] = useState<string>('');
   const [patientCnp, setPatientCnp] = useState<string>('');
 
   // !!! COMPLETEAZĂ ACEST URL CU CEL DIN NODUL WEBHOOK N8N !!!
   const N8N_WEBHOOK_URL = 'https://shadow424.app.n8n.cloud/webhook/medical-assistant';
 
-  // Referințe noi pentru MediaRecorder
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  
+  // Referință nouă pentru inputul de fișier
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Am scos referințele vechi (sessionRef, audioContextRef, etc.)
+  // Funcția de procesare (trimitere la n8n) - refactorizată pentru a fi reutilizabilă
+  const processAudio = async (audioBlob: Blob, fileName: string) => {
+    setIsLoadingAnalysis(true);
+    setError(null);
 
+    if (!N8N_WEBHOOK_URL.startsWith('http')) {
+        setError("URL-ul n8n nu este configurat corect în App.tsx.");
+        setIsLoadingAnalysis(false);
+        return;
+    }
+    
+    if (!patientName.trim()) {
+        setError("Te rugăm să introduci numele pacientului înainte de a procesa.");
+        setIsLoadingAnalysis(false);
+        return;
+    }
+
+    // 1. Crează FormData pentru a trimite fișierul
+    const formData = new FormData();
+    formData.append('data', audioBlob, fileName);
+    formData.append('patient_name', patientName);
+    formData.append('patient_cnp', patientCnp);
+
+    try {
+      // 2. Trimite la n8n
+      const response = await fetch(N8N_WEBHOOK_URL, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Eroare de la serverul n8n (${response.status}): ${errText}`);
+      }
+
+      // 3. Primește JSON-ul final de la n8n
+      const result = await response.json();
+      
+      if (Array.isArray(result) && result[0]?.json) {
+          setAnalysisResult(result[0].json);
+      } else if (result.json) {
+          setAnalysisResult(result.json);
+      } else {
+          setAnalysisResult(result);
+      }
+
+    } catch (err: any) {
+      console.error("Failed to process recording:", err);
+      setError(`A apărut o eroare la procesarea audio: ${err.message}`);
+    } finally {
+      setIsLoadingAnalysis(false);
+    }
+  };
+
+
+  // --- Logica de Înregistrare ---
   const handleStartTranscription = useCallback(async () => {
     setError(null);
     setAnalysisResult(null);
     setIsRecording(true);
-    audioChunksRef.current = []; // Golește bucățile audio
+    audioChunksRef.current = [];
 
-    if (!N8N_WEBHOOK_URL.startsWith('http')) {
-        setError("URL-ul n8n nu este configurat corect în App.tsx.");
-        setIsRecording(false);
-        return;
-    }
-    
     if (!patientName.trim()) {
         setError("Te rugăm să introduci numele pacientului înainte de a începe.");
         setIsRecording(false);
@@ -54,72 +95,25 @@ const App: React.FC = () => {
     }
 
     try {
-      // 1. Obține stream-ul audio
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      // 2. Inițiază MediaRecorder
       mediaRecorderRef.current = new MediaRecorder(streamRef.current);
       
-      // 3. Colectează bucățile audio
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
-      // 4. Setează logica pentru 'onstop' (care va fi apelată de handleStopTranscription)
-      mediaRecorderRef.current.onstop = async () => {
+      mediaRecorderRef.current.onstop = () => {
         if (audioChunksRef.current.length === 0) {
           setError("Nu a fost înregistrat niciun sunet.");
           setIsLoadingAnalysis(false);
           return;
         }
-        
-        // a. Crează fișierul audio (Blob)
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        
-        // b. Crează FormData pentru a trimite fișierul
-        const formData = new FormData();
-        formData.append('data', audioBlob, 'consultatie.webm'); // 'data' este numele așteptat de n8n
-        
-        // c. Adaugă datele pacientului (pe care n8n le va folosi în Google Sheets)
-        formData.append('patient_name', patientName);
-        formData.append('patient_cnp', patientCnp);
-
-        try {
-          // d. Trimite la n8n
-          const response = await fetch(N8N_WEBHOOK_URL, {
-            method: 'POST',
-            body: formData
-          });
-
-          if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`Eroare de la serverul n8n (${response.status}): ${errText}`);
-          }
-
-          // e. Primește JSON-ul final de la n8n
-          const result = await response.json();
-          
-          // Verificăm dacă n8n a returnat datele într-un format ciudat (ex: array, sau { json: ... })
-          // Nodul "Respond to Webhook" ar trebui să returneze direct JSON-ul
-          if (Array.isArray(result) && result[0]?.json) {
-              setAnalysisResult(result[0].json); // Caz comun n8n
-          } else if (result.json) {
-              setAnalysisResult(result.json);
-          } else {
-              setAnalysisResult(result); // Caz ideal
-          }
-
-        } catch (err: any) {
-          console.error("Failed to process recording:", err);
-          setError(`A apărut o eroare la procesarea înregistrării: ${err.message}`);
-        } finally {
-          setIsLoadingAnalysis(false);
-        }
+        processAudio(audioBlob, 'consultatie-live.webm');
       };
 
-      // 5. Pornește înregistrarea
       mediaRecorderRef.current.start();
 
     } catch (err: any) {
@@ -127,33 +121,68 @@ const App: React.FC = () => {
       setError(`Nu am putut accesa microfonul: ${err.message}`);
       setIsRecording(false);
     }
-  }, [patientName, patientCnp]); // Adaugă dependențele
+  }, [patientName, patientCnp]); // Adăugat dependențe
 
-  const handleStopTranscription = useCallback(async () => {
+  const handleStopTranscription = useCallback(() => {
     setIsRecording(false);
-    setIsLoadingAnalysis(true); // Arată loading imediat
+    setIsLoadingAnalysis(true); 
     
     if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop(); // Aceasta va declanșa 'onstop' definit mai sus
+      mediaRecorderRef.current.stop();
     }
     
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop()); // Oprește microfonul
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+  }, []);
+
+  // --- Logica de Upload ---
+  const triggerFileUpload = () => {
+    // Deschide fereastra de selecție fișier
+    fileInputRef.current?.click();
+  };
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
     }
 
-    // Restul logicii este acum în 'onstop'
+    // Verifică dacă numele pacientului este completat
+    if (!patientName.trim()) {
+        setError("Te rugăm să introduci numele pacientului înainte de a încărca un fișier.");
+        // Resetează inputul de fișier pentru a putea selecta același fișier din nou
+        if(fileInputRef.current) fileInputRef.current.value = "";
+        return;
+    }
     
-  }, []); // Nu mai are dependențe
+    // Procesează fișierul selectat
+    processAudio(file, file.name);
+    
+    // Resetează inputul de fișier
+    if(fileInputRef.current) fileInputRef.current.value = "";
+  };
   
+  // --- Reset ---
   const handleReset = () => {
     setAnalysisResult(null);
     setError(null);
-    setPatientName(''); // Resetează și datele pacientului
+    setPatientName('');
     setPatientCnp('');
   };
 
   return (
     <div className="min-h-screen text-gray-800 dark:text-gray-200 flex flex-col items-center p-4 sm:p-6 md:p-8">
+      
+      {/* Input de fișier ascuns */}
+      <input 
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileUpload}
+        accept="audio/*"
+        style={{ display: 'none' }} 
+      />
+      
       <Header />
       <main className="w-full max-w-4xl flex-grow flex flex-col">
         {error && (
@@ -168,7 +197,6 @@ const App: React.FC = () => {
         ) : (
           <>
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 flex-grow flex flex-col">
-              {/* Am scos TranscriptionView */}
               <div className="m-auto text-center text-gray-500 dark:text-gray-400">
                  <InfoIcon className="w-16 h-16 mx-auto mb-4" />
                  <h2 className="text-xl font-semibold mb-2">Asistent Medical AI</h2>
@@ -177,12 +205,11 @@ const App: React.FC = () => {
                  ) : isRecording ? (
                     <p>Înregistrare în curs... Apasă 'Stop' pentru a procesa.</p>
                  ) : (
-                    <p>Completează datele pacientului și apasă 'Start Transcriere'.</p>
+                    <p>Completează datele, apoi înregistrează sau încarcă un fișier.</p>
                  )}
               </div>
             </div>
 
-            {/* Câmpurile pentru Pacient */}
             {!isRecording && !isLoadingAnalysis && (
               <div className="bg-white dark:bg-gray-800 rounded-xl p-6 mt-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -217,7 +244,7 @@ const App: React.FC = () => {
               isLoading={isLoadingAnalysis}
               onStart={handleStartTranscription}
               onStop={handleStopTranscription}
-              // Am scos props-urile de diarizare
+              onUploadClick={triggerFileUpload} // Am adăugat prop-ul nou
             />
           </>
         )}
