@@ -1,11 +1,5 @@
 // @/types.ts
 
-// TranscriptLine nu mai este folosit
-// export interface TranscriptLine {
-//   speaker: 'Doctor' | 'Pacient';
-//   text: string;
-// }
-
 export interface SoapReport {
   Subiectiv: string;
   Obiectiv: string;
@@ -19,16 +13,19 @@ export interface Reteta {
   numeDoctor?: string;
 }
 
+// Am adăugat câmpurile noi opționale
 export interface AnalysisResult {
   rezumat: string;
   raportSOAP: SoapReport;
   diagnosticePosibile: string[];
+  coduriICD10Sugerate?: string[]; // ICD-10 Sugerate
   pasiUrmatori: string[];
   reteta: Reteta;
+  alerteMedicale?: string[]; // Alerte
 }
 
-// LiveSession nu mai este folosit
-// export interface LiveSession {
-//   sendRealtimeInput: (input: { media: { data: string; mimeType: string; }; }) => void;
-//   close: () => void;
-// }
+// Tip nou pentru răspunsul complet de la n8n
+export type N8nResponse = {
+  analysis: AnalysisResult;
+  transcription: string; // Transcrierea brută
+}
