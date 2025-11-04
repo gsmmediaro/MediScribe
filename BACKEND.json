@@ -1,0 +1,777 @@
+{
+  "name": "AGENT MEDICAL",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// ========================================\n// VALIDARE & ÎMBOGĂȚIRE TRANSCRIERE CU DIARIZATION\n// ========================================\n\nconst items = $input.all();\n\nfor (const item of items) {\n  // ===== EXTRAGE TEXT CU VORBITORI SEPARAȚI =====\n  let text = '';\n  let textWithSpeakers = '';\n  let speakerCount = 0;\n  let speakerSegments = [];\n  \n  // Dacă avem structura Deepgram cu diarization\n  if (item.json.results?.channels?.[0]?.alternatives?.[0]) {\n    const alternative = item.json.results.channels[0].alternatives[0];\n    \n    // Text simplu (fără vorbitori)\n    text = alternative.transcript || '';\n    \n    // Dacă avem words cu speaker info, construim textul cu vorbitori\n    if (alternative.words && alternative.words.length > 0) {\n      let currentSpeaker = null;\n      let currentText = '';\n      \n      alternative.words.forEach(word => {\n        if (word.speaker !== currentSpeaker) {\n          // Salvează segmentul anterior\n          if (currentSpeaker !== null && currentText.trim()) {\n            speakerSegments.push({\n              speaker: currentSpeaker,\n              text: currentText.trim()\n            });\n          }\n          // Începe segment nou\n          currentSpeaker = word.speaker;\n          currentText = word.punctuated_word || word.word;\n        } else {\n          currentText += ' ' + (word.punctuated_word || word.word);\n        }\n      });\n      \n      // Salvează ultimul segment\n      if (currentText.trim()) {\n        speakerSegments.push({\n          speaker: currentSpeaker,\n          text: currentText.trim()\n        });\n      }\n      \n      // Construiește textul formatat cu vorbitori\n      // Speaker 0 = Doctor (de obicei cel care vorbește primul/cel care pune întrebări)\n      // Speaker 1 = Pacient\n      textWithSpeakers = speakerSegments.map(segment => {\n        const speakerLabel = segment.speaker === 0 ? 'DOCTOR' : 'PACIENT';\n        return `[${speakerLabel}]: ${segment.text}`;\n      }).join('\\n\\n');\n      \n      // Număr de vorbitori unici\n      const uniqueSpeakers = new Set(alternative.words.map(w => w.speaker));\n      speakerCount = uniqueSpeakers.size;\n    }\n  }\n  \n  // Fallback la format simplu dacă nu avem diarization\n  if (!text && item.json.text) {\n    text = item.json.text;\n    textWithSpeakers = text; // Fără separare vorbitori\n  }\n  \n  const textTrimmed = text.trim();\n  const words = textTrimmed.split(/\\s+/).filter(w => w.length > 0);\n  const wordCount = words.length;\n  const charCount = textTrimmed.length;\n  \n  // ============ LOGGING ============\n  console.log('📝 ========== TRANSCRIERE PRIMITĂ ==========');\n  console.log('📏 Lungime:', charCount, 'caractere');\n  console.log('🔢 Cuvinte:', wordCount);\n  console.log('👥 Vorbitori detectați:', speakerCount);\n  console.log('⏱️ Durată audio:', item.json.metadata?.duration || 'necunoscut', 'secunde');\n  console.log('📄 Preview cu vorbitori (primele 400 caractere):');\n  console.log(textWithSpeakers.substring(0, 400) + (textWithSpeakers.length > 400 ? '...' : ''));\n  console.log('==========================================');\n  \n  // ============ VALIDARE CRITICĂ ============\n  if (charCount === 0) {\n    item.json.transcription_metadata = {\n      error: 'TRANSCRIERE GOALĂ',\n      char_count: 0,\n      word_count: 0,\n      speaker_count: 0,\n      is_valid: false\n    };\n    console.log('❌ TRANSCRIERE GOALĂ - item marcat ca invalid');\n    continue;\n  }\n  \n  if (charCount < 10) {\n    item.json.transcription_metadata = {\n      error: 'TRANSCRIERE PREA SCURTĂ',\n      char_count: charCount,\n      word_count: wordCount,\n      speaker_count: speakerCount,\n      is_valid: false,\n      warning: 'Audio recepționat dar Whisper nu a putut transcrie suficient'\n    };\n    console.log('⚠️ TRANSCRIERE PREA SCURTĂ (' + charCount + ' caractere)');\n    continue;\n  }\n  \n  // ============ VALIDARE DIARIZATION ============\n  if (speakerCount < 2) {\n    console.log('⚠️ ATENȚIE: Doar ' + speakerCount + ' vorbitor detectat - verifică dacă diarization este activat!');\n  }\n  \n  // ============ CATEGORII CONSULTAȚIE ============\n  let consultationType = '';\n  let completeness = 0;\n  let warnings = [];\n  \n  if (charCount < 50) {\n    consultationType = 'fragment';\n    completeness = 10;\n    warnings.push('⚠️ Fragment extrem de scurt - doar câteva cuvinte');\n    warnings.push('📋 SOAP va fi incomplet sau inexistent');\n  } else if (charCount < 200) {\n    consultationType = 'scurtă';\n    completeness = 30;\n    warnings.push('⚠️ Consultație foarte scurtă (< 200 caractere)');\n    warnings.push('📋 SOAP va fi parțial - probabil lipsesc examinare, diagnostic complet sau plan');\n  } else if (charCount < 500) {\n    consultationType = 'medie';\n    completeness = 60;\n    warnings.push('ℹ️ Consultație de lungime medie');\n    warnings.push('📋 SOAP ar trebui să fie OK dacă consultația include toate etapele');\n  } else if (charCount < 1000) {\n    consultationType = 'completă';\n    completeness = 85;\n    warnings.push('✅ Consultație completă - lungime bună');\n  } else {\n    consultationType = 'detaliată';\n    completeness = 100;\n    warnings.push('✅ Consultație foarte detaliată');\n  }\n  \n  // ============ DETECTARE TERMENI MEDICALI ============\n  const medicalTermsFound = [];\n  const medicalKeywords = [\n    'simptom', 'durere', 'febr', 'temperatur', 'tensiune', 'puls',\n    'diagnostic', 'tratament', 'medicament', 'rețet', 'prescri',\n    'investigație', 'analiză', 'consult', 'examin', 'palp', 'auscult',\n    'hipertensiune', 'diabet', 'infecție', 'inflamație', 'acut', 'cronic',\n    'miligram', 'comprimate', 'capsule', 'ziua', 'zile'\n  ];\n  \n  const lowerText = textTrimmed.toLowerCase();\n  medicalKeywords.forEach(keyword => {\n    if (lowerText.includes(keyword)) {\n      medicalTermsFound.push(keyword);\n    }\n  });\n  \n  // ============ ESTIMARE CALITATE ============\n  let qualityScore = 0;\n  let qualityLabel = '';\n  \n  // Scoring\n  if (wordCount >= 50) qualityScore += 20;\n  if (wordCount >= 100) qualityScore += 20;\n  if (medicalTermsFound.length >= 3) qualityScore += 20;\n  if (medicalTermsFound.length >= 6) qualityScore += 20;\n  if (speakerCount >= 2) qualityScore += 20; // Bonus pentru diarization\n  \n  if (qualityScore >= 80) qualityLabel = 'Excelent';\n  else if (qualityScore >= 60) qualityLabel = 'Bun';\n  else if (qualityScore >= 40) qualityLabel = 'Acceptabil';\n  else qualityLabel = 'Slab';\n  \n  // ============ ÎMBOGĂȚIRE METADATA ============\n  item.json.transcription_metadata = {\n    // Statistici de bază\n    char_count: charCount,\n    word_count: wordCount,\n    sentence_count: (textTrimmed.match(/[.!?]+/g) || []).length,\n    speaker_count: speakerCount,\n    has_diarization: speakerCount >= 2,\n    \n    // Clasificare\n    consultation_type: consultationType,\n    completeness_percent: completeness,\n    quality_score: qualityScore,\n    quality_label: qualityLabel,\n    \n    // Detectare conținut\n    medical_terms_found: medicalTermsFound,\n    medical_terms_count: medicalTermsFound.length,\n    \n    // Flags\n    is_valid: true,\n    is_complete_enough: charCount >= 200,\n    has_medical_context: medicalTermsFound.length >= 3,\n    \n    // Warnings\n    warnings: warnings,\n    \n    // Timestamp\n    processed_at: new Date().toISOString()\n  };\n  \n  // ============ SALVARE TEXT DUBLU FORMAT ============\n  item.json.transcript = textTrimmed; // Text simplu\n  item.json.transcript_with_speakers = textWithSpeakers; // Text cu [DOCTOR]/[PACIENT]\n  item.json.speaker_count = speakerCount;\n  item.json.speaker_segments = speakerSegments; // Array cu segmente pentru procesare avansată\n  \n  // ============ LOG METADATA ============\n  console.log('📊 ========== METADATA GENERATĂ ==========');\n  console.log('👥 Vorbitori:', speakerCount);\n  console.log('🏷️ Tip consultație:', consultationType);\n  console.log('📈 Completitudine:', completeness + '%');\n  console.log('⭐ Calitate:', qualityLabel, '(' + qualityScore + '/100)');\n  console.log('🏥 Termeni medicali găsiți:', medicalTermsFound.length);\n  if (medicalTermsFound.length > 0) {\n    console.log('   →', medicalTermsFound.slice(0, 10).join(', '));\n  }\n  if (warnings.length > 0) {\n    console.log('⚠️ Warnings:');\n    warnings.forEach(w => console.log('   ' + w));\n  }\n  console.log('==========================================');\n  \n  // ============ BACKWARD COMPATIBILITY ============\n  item.json.transcription_length = charCount;\n  item.json.transcription_words = wordCount;\n  item.json.text = textTrimmed;\n}\n\nreturn items;"
+      },
+      "id": "ca2a90a1-0d06-4f4c-8b9f-7f2293bb3682",
+      "name": "Validate Transcription",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Ești un asistent medical specializat în documentație clinică din România.\n\nTRANSCRIERE CONSULTAȚIE (cu vorbitori separați):\n{{ $('Validate Transcription').item.json.transcript_with_speakers }}\n\nMETADATA TRANSCRIERE:\n- Vorbitori detectați: {{ $('Validate Transcription').item.json.speaker_count }}\n- Lungime: {{ $('Validate Transcription').item.json.transcription_metadata.char_count }} caractere\n- Cuvinte: {{ $('Validate Transcription').item.json.transcription_metadata.word_count }}\n- Tip consultație: {{ $('Validate Transcription').item.json.transcription_metadata.consultation_type }}\n- Completitudine: {{ $('Validate Transcription').item.json.transcription_metadata.completeness_percent }}%\n- Calitate: {{ $('Validate Transcription').item.json.transcription_metadata.quality_label }}\n\n⚠️ CONTEXT IMPORTANT:\n- [DOCTOR] = vorbele medicului\n- [PACIENT] = vorbele pacientului\n- Generează SOAP bazat STRICT pe dialog. NU inventa informații.\n- Dacă lipsesc informații clare pentru o secțiune, scrie [INFORMAȚIE LIPSĂ].\n\nINSTRUCȚIUNI CRITICE:\n1.  **Extrage din [PACIENT]** → Secțiunea `raportSOAP.Subiectiv`.\n2.  **Extrage din [DOCTOR]** (examinări, observații menționate) → Secțiunea `raportSOAP.Obiectiv`.\n3.  **Diagnosticul/evaluarea** menționată de doctor → Secțiunea `raportSOAP.Analiza`.\n4.  **Planul** menționat de doctor (tratamente, teste, trimiteri) → Secțiunea `raportSOAP.Plan`.\n5.  **Pe baza secțiunii 'Analiza'**, sugerează până la 3 coduri ICD-10 relevante în `coduriICD10Sugerate`. Dacă nu poți identifica, lasă lista goală `[]`.\n6.  **Analizează întreaga conversație** pentru potențiale riscuri, alergii menționate sau interacțiuni medicamentoase evidente. Menționează-le pe scurt în `alerteMedicale`. Dacă nu identifici nimic, lasă lista goală `[]`.\n7.  **Medicamentele prescrise** de doctor → Secțiunea `reteta.medicatie`. Dacă nu se prescrie nimic, lasă lista goală `[]`.\n8.  **Instrucțiunile** date de doctor pentru medicamente → Secțiunea `reteta.instructiuni`.\n9.  **Folosește diacritice** românești corecte.\n\nRĂSPUNDE STRICT ÎN FORMAT JSON (fără markdown, fără ```json):\n{\n  \"rezumat\": \"Rezumă consultația în 2-3 propoziții clare pentru pacient, incluzând simptomele principale și planul general.\",\n  \"raportSOAP\": {\n    \"Subiectiv\": \"Ce spune PACIENTUL despre simptome, istoric, durată, context etc.\",\n    \"Obiectiv\": \"[INFORMAȚIE LIPSĂ] sau menționează observațiile/examinările descrise de DOCTOR.\",\n    \"Analiza\": \"[INFORMAȚIE LIPSĂ] sau diagnosticul/evaluarea formulată de DOCTOR.\",\n    \"Plan\": \"[INFORMAȚIE LIPSĂ] sau planul de tratament/investigații menționat de DOCTOR.\"\n  },\n  \"diagnosticePosibile\": [\"Listă cu posibile diagnostice menționate sau deduse din conversație\"],\n  \"coduriICD10Sugerate\": [\"Listă de string-uri cu coduri ICD-10 sugerate pe baza Analizei (ex: ['J06.9', 'R51'])\"],\n  \"pasiUrmatori\": [\"Listă clară de acțiuni viitoare menționate de DOCTOR (ex: 'Analize de urină', 'Trimitere cardiologie')\"],\n  \"reteta\": {\n     \"medicatie\": [\"Listă de medicamente prescrise explicit de DOCTOR (ex: ['Paracetamol 500mg', 'Nurofen 200mg'])\"],\n     \"instructiuni\": \"Instrucțiunile de administrare menționate de DOCTOR pentru medicamentele prescrise.\",\n     \"numeDoctor\": \"Numele doctorului dacă este menționat în conversație.\"\n  },\n  \"alerteMedicale\": [\"Listă de string-uri cu potențiale alerte/atenționări identificate din conversație (alergii, interacțiuni etc.)\"]\n}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "aea0cf3f-60d7-47d1-9455-7302098bf8d3",
+      "name": "Generate SOAP with Gemini",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        368
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Jq2VcoSxb736GP4n",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "188EFWnH51WNyrPovXfcJ7n6JnxrszKTMkJ72JXJhlXc",
+          "mode": "list",
+          "cachedResultName": "MediScribe_Template",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/188EFWnH51WNyrPovXfcJ7n6JnxrszKTMkJ72JXJhlXc/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1154986003,
+          "mode": "list",
+          "cachedResultName": "MediScribe_Template",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/188EFWnH51WNyrPovXfcJ7n6JnxrszKTMkJ72JXJhlXc/edit#gid=1154986003"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "data_consultatie": "={{ $json.data_consultatie }}",
+            "ora_consultatie": "={{ $json.ora_consultatie }}",
+            "nume_pacient": "={{ $json.nume_pacient }}",
+            "cnp_pacient": "={{ $json.cnp_pacient }}",
+            "soap_subiectiv": "={{ $json.soap_subiectiv }}",
+            "soap_obiectiv": "={{ $json.soap_obiectiv }}",
+            "soap_evaluare": "={{ $json.soap_evaluare }}",
+            "soap_plan": "={{ $json.soap_plan }}",
+            "retete": "={{ $json.retete }}",
+            "numar_retete": "={{ $json.numar_retete }}",
+            "rezumat_pacient": "={{ $json.rezumat_pacient }}",
+            "transcriere_lungime": "={{ $json.transcriere_lungime }}",
+            "transcriere_cuvinte": "={{ $json.transcriere_cuvinte }}",
+            "tip_consultatie": "={{ $json.tip_consultatie }}",
+            "completitudine": "={{ $json.completitudine }}",
+            "calitate_score": "={{ $json.calitate_score }}",
+            "calitate_label": "={{ $json.calitate_label }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "data_consultatie",
+              "displayName": "data_consultatie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ora_consultatie",
+              "displayName": "ora_consultatie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nume_pacient",
+              "displayName": "nume_pacient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "cnp_pacient",
+              "displayName": "cnp_pacient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_subiectiv",
+              "displayName": "soap_subiectiv",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_obiectiv",
+              "displayName": "soap_obiectiv",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_evaluare",
+              "displayName": "soap_evaluare",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_plan",
+              "displayName": "soap_plan",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "retete",
+              "displayName": "retete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "numar_retete",
+              "displayName": "numar_retete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rezumat_pacient",
+              "displayName": "rezumat_pacient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "transcriere_lungime",
+              "displayName": "transcriere_lungime",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "transcriere_cuvinte",
+              "displayName": "transcriere_cuvinte",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tip_consultatie",
+              "displayName": "tip_consultatie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "completitudine",
+              "displayName": "completitudine",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calitate_score",
+              "displayName": "calitate_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calitate_label",
+              "displayName": "calitate_label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "useAppend": true
+        }
+      },
+      "id": "fdb2dd6c-5eaf-4698-983c-00701a7b5652",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        2816,
+        32
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "8UI3OYc19LY2Vyig",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \n    analysis: JSON.parse($('Generate SOAP with Gemini').item.json.content.parts[0].text), \n    transcription: $('Validate Transcription').item.json.transcript_with_speakers \n   } \n}}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "ef96d28b-d161-4516-8375-fd854adfaa52",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        3040,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "medical-assistant",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "72881f02-8b1b-4661-9fad-4435379cb1c7",
+      "name": "Webhook Trigger1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1328,
+        32
+      ],
+      "webhookId": "de5f062a-bfeb-4c20-9d61-5596a6eb627e"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepgram.com/v1/listen",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "whisper"
+            },
+            {
+              "name": "language",
+              "value": "ro"
+            },
+            {
+              "name": "punctuate",
+              "value": "true"
+            },
+            {
+              "name": "diarize",
+              "value": "true"
+            },
+            {
+              "name": "smart_format",
+              "value": "true"
+            },
+            {
+              "name": "utterances",
+              "value": "true"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "=data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1552,
+        32
+      ],
+      "id": "1cf6dedf-4849-4ad4-b8da-092b7b4fb30c",
+      "name": "Deepgram",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "fyTbJzZ66CWAV0Ny",
+          "name": "Deepgram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Ești un asistent medical avansat, specializat în documentație clinică și siguranța pacientului în România. Pe lângă generarea raportului SOAP, ești echipat cu unelte (Tools) pentru a valida medicamentele prescrise.\n\nTRANSCRIERE CONSULTAȚIE (cu vorbitori separați):\n{{ $('Validate Transcription').item.json.transcript_with_speakers }}\n\n⚠️ CONTEXT IMPORTANT:\n- [DOCTOR] = vorbele medicului\n- [PACIENT] = vorbele pacientului\n- Generează SOAP bazat STRICT pe dialog. NU inventa informații.\n- Dacă lipsesc informații clare pentru o secțiune, scrie [INFORMAȚIE LIPSĂ].\n\nINSTRUCȚIUNI CRITICE PENTRU FLUXUL DE LUCRU:\n1.  **Extrage din [PACIENT]** → Secțiunea `raportSOAP.Subiectiv`.\n2.  **Extrage din [DOCTOR]** (examinări, observații menționate) → Secțiunea `raportSOAP.Obiectiv`.\n3.  **Diagnosticul/evaluarea** menționată de doctor → Secțiunea `raportSOAP.Analiza`.\n4.  **Planul** menționat de doctor (tratamente, teste, trimiteri) → Secțiunea `raportSOAP.Plan`.\n5.  **Pe baza secțiunii 'Analiza'**, sugerează până la 3 coduri ICD-10 relevante în `coduriICD10Sugerate`.\n6.  **Medicamentele prescrise** de doctor → Secțiunea `reteta.medicatie`. Dacă nu se prescrie nimic, lasă lista goală `[]`.\n7.  **Instrucțiunile** date de doctor pentru medicamente → Secțiunea `reteta.instructiuni`.\n\nFLUX DE VERIFICARE MEDICAMENTE (Folosind Uneltele):\nA.  Inițializează o listă goală de coduri RxCUI.\nB.  Pentru FIECARE medicament din `reteta.medicatie`:\n    i.   Extrage DOAR numele de bază al medicamentului (fără doză, ex: din \"Paracetamol 500mg\" → \"Paracetamol\").\n         Apoi folosește unealta `search_nomenclator` cu parametrul {\"medicament\": \"numele_de_baza\"}.\n         Exemplu: search_nomenclator(medicament=\"Paracetamol\")\nNOTĂ IMPORTANTĂ PENTRU EXTRAGEREA NUMELUI:\n- \"Paracetamol 500mg\" → extrage \"Paracetamol\"  \n- \"Ibuprofen 400mg comprimate\" → extrage \"Ibuprofen\"\n- \"Nurofen sirop\" → extrage \"Nurofen\"\nElimină doza (mg, g, ml) și forma (comprimate, sirop, etc).\n    ii.  Din rezultatul de la `cautareMedicament`, extrage DCI-ul (substanța activă, ex: \"Ibuprofenum\").\n    iii. Folosește unealta `getRxCUI` cu DCI-ul obținut pentru a găsi codul RxCUI standardizat. (Ex: `getRxCUI(nume_medicament=\"Ibuprofenum\")`).\n    iv.  Adaugă codul RxCUI găsit (din `idGroup.rxnormId[0]`) la lista ta de coduri.\nC.  După ce ai lista completă de coduri RxCUI (ex: [\"rxcui1\", \"rxcui2\"]):\n    i.   Formatează lista într-un singur string, separat prin \"+\". (Ex: \"rxcui1+rxcui2\").\n    ii.  Apelează unealta `verificareInteractiune` cu acest string. (Ex: `verificareInteractiune(rxcuis=\"rxcui1+rxcui2\")`).\nD.  Analizează răspunsul de la `verificareInteractiune`. Include ORICE interacțiune găsită (cu descrierea \"description\") în lista `alerteMedicale`.\nE.  Adaugă în `alerteMedicale` și orice alergie menționată de pacient în transcriere.\n\nRĂSPUNDE STRICT ÎN FORMAT JSON (fără markdown, fără ```json):\n{\n  \"rezumat\": \"Rezumă consultația în 2-3 propoziții clare pentru pacient, incluzând simptomele principale și planul general.\",\n  \"raportSOAP\": {\n    \"Subiectiv\": \"Ce spune PACIENTUL despre simptome, istoric, durată, context etc.\",\n    \"Obiectiv\": \"[INFORMAȚIE LIPSĂ] sau menționează observațiile/examinările descrise de DOCTOR.\",\n    \"Analiza\": \"[INFORMAȚIE LIPSĂ] sau diagnosticul/evaluarea formulată de DOCTOR.\",\n    \"Plan\": \"[INFORMAȚIE LIPSĂ] sau planul de tratament/investigații menționat de DOCTOR.\"\n  },\n  \"diagnosticePosibile\": [\"Listă cu posibile diagnostice menționate sau deduse din conversație\"],\n  \"coduriICD10Sugerate\": [\"Listă de string-uri cu coduri ICD-10 sugerate pe baza Analizei (ex: ['J06.9', 'R51'])\"],\n  \"pasiUrmatori\": [\"Listă clară de acțiuni viitoare menționate de DOCTOR (ex: 'Analize de urină', 'Trimitere cardiologie')\"],\n  \"reteta\": {\n     \"medicatie\": [\"Listă de medicamente prescrise explicit de DOCTOR (ex: ['Paracetamol 500mg', 'Nurofen 200mg'])\"],\n     \"instructiuni\": \"Instrucțiunile de administrare menționate de DOCTOR pentru medicamentele prescrise.\",\n     \"numeDoctor\": \"Numele doctorului dacă este menționat în conversație.\"\n  },\n  \"alerteMedicale\": [\"Listă de string-uri cu potențiale alergii identificate din conversație ȘI interacțiunile medicamentoase validate de unelte.\"]\n}",
+        "hasOutputParser": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        2128,
+        32
+      ],
+      "id": "b621846a-fbbc-4b22-bf44-f6776f020c98",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        256
+      ],
+      "id": "2db02789-4b1d-4faa-8c20-4c95e0a9fa4a",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Jq2VcoSxb736GP4n",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Caută un medicament în Nomenclatorul medicamentelor din România.",
+        "operation": "getAll",
+        "tableId": "NOMENCLATOR",
+        "limit": 5,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "Denumire comerciala",
+              "condition": "ilike",
+              "keyValue": "={{ $parameter[\"medicament\"] }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabaseTool",
+      "typeVersion": 1,
+      "position": [
+        2128,
+        256
+      ],
+      "id": "63942bdb-805f-41ef-af70-82afc530d994",
+      "name": "search_nomenclator",
+      "credentials": {
+        "supabaseApi": {
+          "id": "CEylzdiC7nEmp872",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toolDescription": "Obține codul RxCUI pentru un medicament din baza de date RxNorm (NIH).",
+        "url": "https://rxnav.nlm.nih.gov/REST/rxcui.json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "{{ $input.nume_medicament }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.3,
+      "position": [
+        2256,
+        256
+      ],
+      "id": "9ab2eaec-c56f-41ed-9321-88a4c77f018f",
+      "name": "get_rxcui"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"RaportConsultatieMedicala\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"rezumat\": {\n      \"type\": \"string\",\n      \"description\": \"Rezumă consultația în 2-3 propoziții clare pentru pacient, incluzând simptomele principale și planul general.\"\n    },\n    \"raportSOAP\": {\n      \"type\": \"object\",\n      \"description\": \"Raportul medical structurat în format SOAP.\",\n      \"properties\": {\n        \"Subiectiv\": {\n          \"type\": \"string\",\n          \"description\": \"Ce spune PACIENTUL despre simptome, istoric, durată, context etc.\"\n        },\n        \"Obiectiv\": {\n          \"type\": \"string\",\n          \"description\": \"Observațiile/examinările descrise de DOCTOR sau '[INFORMAȚIE LIPSĂ]'.\"\n        },\n        \"Analiza\": {\n          \"type\": \"string\",\n          \"description\": \"Diagnosticul/evaluarea formulată de DOCTOR sau '[INFORMAȚIE LIPSĂ]'.\"\n        },\n        \"Plan\": {\n          \"type\": \"string\",\n          \"description\": \"Planul de tratament/investigații menționat de DOCTOR sau '[INFORMAȚIE LIPSĂ]'.\"\n        }\n      },\n      \"required\": [\"Subiectiv\", \"Obiectiv\", \"Analiza\", \"Plan\"]\n    },\n    \"diagnosticePosibile\": {\n      \"type\": \"array\",\n      \"description\": \"Listă cu posibile diagnostice menționate sau deduse din conversație.\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"coduriICD10Sugerate\": {\n      \"type\": \"array\",\n      \"description\": \"Listă de string-uri cu coduri ICD-10 sugerate pe baza Analizei (ex: ['J06.9', 'R51']). Lista goală dacă nu se identifică.\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"pasiUrmatori\": {\n      \"type\": \"array\",\n      \"description\": \"Listă clară de acțiuni viitoare menționate de DOCTOR (ex: 'Analize de urină', 'Trimitere cardiologie').\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    },\n    \"reteta\": {\n      \"type\": \"object\",\n      \"description\": \"Detalii despre medicamentele prescrise.\",\n      \"properties\": {\n        \"medicatie\": {\n          \"type\": \"array\",\n          \"description\": \"Listă de medicamente prescrise explicit de DOCTOR (ex: ['Paracetamol 500mg']). Lista goală dacă nu se prescrie nimic.\",\n          \"items\": {\n            \"type\": \"string\"\n          }\n        },\n        \"instructiuni\": {\n          \"type\": \"string\",\n          \"description\": \"Instrucțiunile de administrare menționate de DOCTOR pentru medicamentele prescrise.\"\n        },\n        \"numeDoctor\": {\n          \"type\": \"string\",\n          \"description\": \"Numele doctorului dacă este menționat în conversație.\"\n        }\n      },\n      \"required\": [\"medicatie\", \"instructiuni\", \"numeDoctor\"]\n    },\n    \"alerteMedicale\": {\n      \"type\": \"array\",\n      \"description\": \"Listă de string-uri cu potențiale alergii identificate din conversație ȘI interacțiunile medicamentoase validate de unelte. Lista goală dacă nu se identifică nimic.\",\n      \"items\": {\n        \"type\": \"string\"\n      }\n    }\n  },\n  \"required\": [\n    \"rezumat\",\n    \"raportSOAP\",\n    \"diagnosticePosibile\",\n    \"coduriICD10Sugerate\",\n    \"pasiUrmatori\",\n    \"reteta\",\n    \"alerteMedicale\"\n  ]\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2384,
+        256
+      ],
+      "id": "9004a43e-8d6b-47ec-b76e-052decb232bf",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6a9bfa20-5c48-424b-8ce2-f4ab80e702b9",
+              "name": "timestamp",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            },
+            {
+              "id": "c3a1d37f-34e3-45b8-b7fa-9547a28bc869",
+              "name": "data_consultatie",
+              "value": "={{ new Date().toLocaleDateString('ro-RO') }}",
+              "type": "string"
+            },
+            {
+              "id": "2c262fd1-bf43-45d6-8b7a-59c470ce3d19",
+              "name": "ora_consultatie",
+              "value": "={{ new Date().toLocaleTimeString('ro-RO') }}",
+              "type": "string"
+            },
+            {
+              "id": "6dd925ed-f09c-4d31-8959-9e4e1219b346",
+              "name": "nume_pacient",
+              "value": "={{ $('Webhook Trigger1').item.json.body.patient_name }}",
+              "type": "string"
+            },
+            {
+              "id": "507b8fe0-06fe-42e0-a330-a46f28ee7ef7",
+              "name": "cnp_pacient",
+              "value": "={{ $('Webhook Trigger1').item.json.body.patient_cnp }}",
+              "type": "string"
+            },
+            {
+              "id": "99bccb64-3542-45f3-a05e-19007f7378ee",
+              "name": "soap_subiectiv",
+              "value": "={{ $json.output.raportSOAP.Subiectiv }}",
+              "type": "string"
+            },
+            {
+              "id": "a0b75905-6955-45ca-9d3c-2a9027864921",
+              "name": "soap_obiectiv",
+              "value": "={{ $json.output.raportSOAP.Obiectiv }}",
+              "type": "string"
+            },
+            {
+              "id": "31a56747-d652-4c93-89a5-e34d539e3d5c",
+              "name": "soap_evaluare",
+              "value": "={{ $json.output.raportSOAP.Analiza }}",
+              "type": "string"
+            },
+            {
+              "id": "1aca317e-d3b4-492c-b800-aed35b88db6a",
+              "name": "soap_plan",
+              "value": "={{ $json.output.raportSOAP.Plan }}",
+              "type": "string"
+            },
+            {
+              "id": "2d7bd462-dd92-41c5-862f-e9659be40109",
+              "name": "retete",
+              "value": "={{ $json.output.reteta.medicatie.length > 0 ? $json.output.reteta.medicatie.map((med, i) => `${i+1}. ${med}`).join(' | ') + ` | Instructiuni: ${$json.output.reteta.instructiuni}` : 'Fără rețete prescrise' }}",
+              "type": "string"
+            },
+            {
+              "id": "99fbad99-8da8-4f39-9ed2-2faa0e8ef9a0",
+              "name": "numar_retete",
+              "value": "={{ $json.output.reteta.medicatie.length }}",
+              "type": "string"
+            },
+            {
+              "id": "fa7de088-5005-4252-a589-70ed7067edf3",
+              "name": "rezumat_pacient",
+              "value": "={{ $json.output.rezumat }}",
+              "type": "string"
+            },
+            {
+              "id": "1e940557-07a4-42f3-964a-7f46630baee7",
+              "name": "alerte",
+              "value": "={{ $json.output.alerteMedicale.length > 0 ? $json.output.alerteMedicale.join(' | ') : 'Nicio alertă' }}",
+              "type": "string"
+            },
+            {
+              "id": "44994318-8023-4d6c-adf1-97d83548de81",
+              "name": "transcriere_cu_vorbitori",
+              "value": "={{ $('Validate Transcription').item.json.transcript_with_speakers }}",
+              "type": "string"
+            },
+            {
+              "id": "53315d01-1b7a-4751-86f3-9057ccea2d70",
+              "name": "transcriere_text_simplu",
+              "value": "={{ $('Validate Transcription').item.json.transcript }}",
+              "type": "string"
+            },
+            {
+              "id": "c0920a66-74c3-46a3-a2a3-d742532c460b",
+              "name": "numar_vorbitori",
+              "value": "={{ $('Validate Transcription').item.json.speaker_count }}",
+              "type": "string"
+            },
+            {
+              "id": "2c782542-7587-4849-96e7-17427fb09aab",
+              "name": "diarization_activa",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.has_diarization}}",
+              "type": "string"
+            },
+            {
+              "id": "b30961cb-58a0-47b1-b384-5b29e60fa46a",
+              "name": "transcriere_lungime",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.char_count}}",
+              "type": "string"
+            },
+            {
+              "id": "94d2720c-d914-40ab-9246-5a307dd2c060",
+              "name": "transcriere_cuvinte",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.word_count}}",
+              "type": "string"
+            },
+            {
+              "id": "46ee665e-bce5-41d6-ae29-feb1b49fd5d1",
+              "name": "tip_consultatie",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.consultation_type}}",
+              "type": "string"
+            },
+            {
+              "id": "acfb0513-02fd-4081-9644-377f7d6f7818",
+              "name": "completitudine",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.completeness_percent}}",
+              "type": "string"
+            },
+            {
+              "id": "4dc8cb21-4750-4f3c-a57c-18b660f0a69a",
+              "name": "calitate_score",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.quality_score}}",
+              "type": "string"
+            },
+            {
+              "id": "e888a126-cb32-45b9-a209-3b6e892698a4",
+              "name": "calitate_label",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.quality_label}}",
+              "type": "string"
+            },
+            {
+              "id": "61029388-905e-4927-802e-563e2f523c67",
+              "name": "termeni_medicali_count",
+              "value": "={{ $('Validate Transcription').item.json.transcription_metadata.medical_terms_count}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2592,
+        32
+      ],
+      "id": "0e9cf8c7-0e65-4617-8a3c-363eed067586",
+      "name": "Edit Fields"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Validate Transcription": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate SOAP with Gemini": {
+      "main": [
+        []
+      ]
+    },
+    "Log to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Deepgram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deepgram": {
+      "main": [
+        [
+          {
+            "node": "Validate Transcription",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "search_nomenclator": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_rxcui": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "6b72ea7d-e952-43af-8aa8-7c02d4433f30",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8b288455c98dd89b1683c1f42341ee1e9b37a04d731a8c359e81baed65b07cec"
+  },
+  "id": "EZvoiSldMjDfpbjK",
+  "tags": []
+}
