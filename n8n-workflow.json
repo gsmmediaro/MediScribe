@@ -1,0 +1,472 @@
+{
+  "name": "AGENT MEDICAL",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// ========================================\n// VALIDARE & ÎMBOGĂȚIRE TRANSCRIERE CU DIARIZATION\n// ========================================\n\nconst items = $input.all();\n\nfor (const item of items) {\n  // ===== EXTRAGE TEXT CU VORBITORI SEPARAȚI =====\n  let text = '';\n  let textWithSpeakers = '';\n  let speakerCount = 0;\n  let speakerSegments = [];\n  \n  // Dacă avem structura Deepgram cu diarization\n  if (item.json.results?.channels?.[0]?.alternatives?.[0]) {\n    const alternative = item.json.results.channels[0].alternatives[0];\n    \n    // Text simplu (fără vorbitori)\n    text = alternative.transcript || '';\n    \n    // Dacă avem words cu speaker info, construim textul cu vorbitori\n    if (alternative.words && alternative.words.length > 0) {\n      let currentSpeaker = null;\n      let currentText = '';\n      \n      alternative.words.forEach(word => {\n        if (word.speaker !== currentSpeaker) {\n          // Salvează segmentul anterior\n          if (currentSpeaker !== null && currentText.trim()) {\n            speakerSegments.push({\n              speaker: currentSpeaker,\n              text: currentText.trim()\n            });\n          }\n          // Începe segment nou\n          currentSpeaker = word.speaker;\n          currentText = word.punctuated_word || word.word;\n        } else {\n          currentText += ' ' + (word.punctuated_word || word.word);\n        }\n      });\n      \n      // Salvează ultimul segment\n      if (currentText.trim()) {\n        speakerSegments.push({\n          speaker: currentSpeaker,\n          text: currentText.trim()\n        });\n      }\n      \n      // Construiește textul formatat cu vorbitori\n      // Speaker 0 = Doctor (de obicei cel care vorbește primul/cel care pune întrebări)\n      // Speaker 1 = Pacient\n      textWithSpeakers = speakerSegments.map(segment => {\n        const speakerLabel = segment.speaker === 0 ? 'DOCTOR' : 'PACIENT';\n        return `[${speakerLabel}]: ${segment.text}`;\n      }).join('\\n\\n');\n      \n      // Număr de vorbitori unici\n      const uniqueSpeakers = new Set(alternative.words.map(w => w.speaker));\n      speakerCount = uniqueSpeakers.size;\n    }\n  }\n  \n  // Fallback la format simplu dacă nu avem diarization\n  if (!text && item.json.text) {\n    text = item.json.text;\n    textWithSpeakers = text; // Fără separare vorbitori\n  }\n  \n  const textTrimmed = text.trim();\n  const words = textTrimmed.split(/\\s+/).filter(w => w.length > 0);\n  const wordCount = words.length;\n  const charCount = textTrimmed.length;\n  \n  // ============ LOGGING ============\n  console.log('📝 ========== TRANSCRIERE PRIMITĂ ==========');\n  console.log('📏 Lungime:', charCount, 'caractere');\n  console.log('🔢 Cuvinte:', wordCount);\n  console.log('👥 Vorbitori detectați:', speakerCount);\n  console.log('⏱️ Durată audio:', item.json.metadata?.duration || 'necunoscut', 'secunde');\n  console.log('📄 Preview cu vorbitori (primele 400 caractere):');\n  console.log(textWithSpeakers.substring(0, 400) + (textWithSpeakers.length > 400 ? '...' : ''));\n  console.log('==========================================');\n  \n  // ============ VALIDARE CRITICĂ ============\n  if (charCount === 0) {\n    item.json.transcription_metadata = {\n      error: 'TRANSCRIERE GOALĂ',\n      char_count: 0,\n      word_count: 0,\n      speaker_count: 0,\n      is_valid: false\n    };\n    console.log('❌ TRANSCRIERE GOALĂ - item marcat ca invalid');\n    continue;\n  }\n  \n  if (charCount < 10) {\n    item.json.transcription_metadata = {\n      error: 'TRANSCRIERE PREA SCURTĂ',\n      char_count: charCount,\n      word_count: wordCount,\n      speaker_count: speakerCount,\n      is_valid: false,\n      warning: 'Audio recepționat dar Whisper nu a putut transcrie suficient'\n    };\n    console.log('⚠️ TRANSCRIERE PREA SCURTĂ (' + charCount + ' caractere)');\n    continue;\n  }\n  \n  // ============ VALIDARE DIARIZATION ============\n  if (speakerCount < 2) {\n    console.log('⚠️ ATENȚIE: Doar ' + speakerCount + ' vorbitor detectat - verifică dacă diarization este activat!');\n  }\n  \n  // ============ CATEGORII CONSULTAȚIE ============\n  let consultationType = '';\n  let completeness = 0;\n  let warnings = [];\n  \n  if (charCount < 50) {\n    consultationType = 'fragment';\n    completeness = 10;\n    warnings.push('⚠️ Fragment extrem de scurt - doar câteva cuvinte');\n    warnings.push('📋 SOAP va fi incomplet sau inexistent');\n  } else if (charCount < 200) {\n    consultationType = 'scurtă';\n    completeness = 30;\n    warnings.push('⚠️ Consultație foarte scurtă (< 200 caractere)');\n    warnings.push('📋 SOAP va fi parțial - probabil lipsesc examinare, diagnostic complet sau plan');\n  } else if (charCount < 500) {\n    consultationType = 'medie';\n    completeness = 60;\n    warnings.push('ℹ️ Consultație de lungime medie');\n    warnings.push('📋 SOAP ar trebui să fie OK dacă consultația include toate etapele');\n  } else if (charCount < 1000) {\n    consultationType = 'completă';\n    completeness = 85;\n    warnings.push('✅ Consultație completă - lungime bună');\n  } else {\n    consultationType = 'detaliată';\n    completeness = 100;\n    warnings.push('✅ Consultație foarte detaliată');\n  }\n  \n  // ============ DETECTARE TERMENI MEDICALI ============\n  const medicalTermsFound = [];\n  const medicalKeywords = [\n    'simptom', 'durere', 'febr', 'temperatur', 'tensiune', 'puls',\n    'diagnostic', 'tratament', 'medicament', 'rețet', 'prescri',\n    'investigație', 'analiză', 'consult', 'examin', 'palp', 'auscult',\n    'hipertensiune', 'diabet', 'infecție', 'inflamație', 'acut', 'cronic',\n    'miligram', 'comprimate', 'capsule', 'ziua', 'zile'\n  ];\n  \n  const lowerText = textTrimmed.toLowerCase();\n  medicalKeywords.forEach(keyword => {\n    if (lowerText.includes(keyword)) {\n      medicalTermsFound.push(keyword);\n    }\n  });\n  \n  // ============ ESTIMARE CALITATE ============\n  let qualityScore = 0;\n  let qualityLabel = '';\n  \n  // Scoring\n  if (wordCount >= 50) qualityScore += 20;\n  if (wordCount >= 100) qualityScore += 20;\n  if (medicalTermsFound.length >= 3) qualityScore += 20;\n  if (medicalTermsFound.length >= 6) qualityScore += 20;\n  if (speakerCount >= 2) qualityScore += 20; // Bonus pentru diarization\n  \n  if (qualityScore >= 80) qualityLabel = 'Excelent';\n  else if (qualityScore >= 60) qualityLabel = 'Bun';\n  else if (qualityScore >= 40) qualityLabel = 'Acceptabil';\n  else qualityLabel = 'Slab';\n  \n  // ============ ÎMBOGĂȚIRE METADATA ============\n  item.json.transcription_metadata = {\n    // Statistici de bază\n    char_count: charCount,\n    word_count: wordCount,\n    sentence_count: (textTrimmed.match(/[.!?]+/g) || []).length,\n    speaker_count: speakerCount,\n    has_diarization: speakerCount >= 2,\n    \n    // Clasificare\n    consultation_type: consultationType,\n    completeness_percent: completeness,\n    quality_score: qualityScore,\n    quality_label: qualityLabel,\n    \n    // Detectare conținut\n    medical_terms_found: medicalTermsFound,\n    medical_terms_count: medicalTermsFound.length,\n    \n    // Flags\n    is_valid: true,\n    is_complete_enough: charCount >= 200,\n    has_medical_context: medicalTermsFound.length >= 3,\n    \n    // Warnings\n    warnings: warnings,\n    \n    // Timestamp\n    processed_at: new Date().toISOString()\n  };\n  \n  // ============ SALVARE TEXT DUBLU FORMAT ============\n  item.json.transcript = textTrimmed; // Text simplu\n  item.json.transcript_with_speakers = textWithSpeakers; // Text cu [DOCTOR]/[PACIENT]\n  item.json.speaker_count = speakerCount;\n  item.json.speaker_segments = speakerSegments; // Array cu segmente pentru procesare avansată\n  \n  // ============ LOG METADATA ============\n  console.log('📊 ========== METADATA GENERATĂ ==========');\n  console.log('👥 Vorbitori:', speakerCount);\n  console.log('🏷️ Tip consultație:', consultationType);\n  console.log('📈 Completitudine:', completeness + '%');\n  console.log('⭐ Calitate:', qualityLabel, '(' + qualityScore + '/100)');\n  console.log('🏥 Termeni medicali găsiți:', medicalTermsFound.length);\n  if (medicalTermsFound.length > 0) {\n    console.log('   →', medicalTermsFound.slice(0, 10).join(', '));\n  }\n  if (warnings.length > 0) {\n    console.log('⚠️ Warnings:');\n    warnings.forEach(w => console.log('   ' + w));\n  }\n  console.log('==========================================');\n  \n  // ============ BACKWARD COMPATIBILITY ============\n  item.json.transcription_length = charCount;\n  item.json.transcription_words = wordCount;\n  item.json.text = textTrimmed;\n}\n\nreturn items;"
+      },
+      "id": "ca2a90a1-0d06-4f4c-8b9f-7f2293bb3682",
+      "name": "Validate Transcription",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Ești un asistent medical specializat în documentație clinică din România.\n\nTRANSCRIERE CONSULTAȚIE (cu vorbitori separați):\n{{ $('Validate Transcription').item.json.transcript_with_speakers }}\n\nMETADATA TRANSCRIERE:\n- Vorbitori detectați: {{ $('Validate Transcription').item.json.speaker_count }}\n- Lungime: {{ $('Validate Transcription').item.json.transcription_metadata.char_count }} caractere\n- Cuvinte: {{ $('Validate Transcription').item.json.transcription_metadata.word_count }}\n- Tip consultație: {{ $('Validate Transcription').item.json.transcription_metadata.consultation_type }}\n- Completitudine: {{ $('Validate Transcription').item.json.transcription_metadata.completeness_percent }}%\n- Calitate: {{ $('Validate Transcription').item.json.transcription_metadata.quality_label }}\n\n⚠️ CONTEXT IMPORTANT:\n- [DOCTOR] = vorbele medicului\n- [PACIENT] = vorbele pacientului\n- Generează SOAP bazat STRICT pe dialog. NU inventa informații.\n- Dacă lipsesc informații clare pentru o secțiune, scrie [INFORMAȚIE LIPSĂ].\n\nINSTRUCȚIUNI CRITICE:\n1.  **Extrage din [PACIENT]** → Secțiunea `raportSOAP.Subiectiv`.\n2.  **Extrage din [DOCTOR]** (examinări, observații menționate) → Secțiunea `raportSOAP.Obiectiv`.\n3.  **Diagnosticul/evaluarea** menționată de doctor → Secțiunea `raportSOAP.Analiza`.\n4.  **Planul** menționat de doctor (tratamente, teste, trimiteri) → Secțiunea `raportSOAP.Plan`.\n5.  **Pe baza secțiunii 'Analiza'**, sugerează până la 3 coduri ICD-10 relevante în `coduriICD10Sugerate`. Dacă nu poți identifica, lasă lista goală `[]`.\n6.  **Analizează întreaga conversație** pentru potențiale riscuri, alergii menționate sau interacțiuni medicamentoase evidente. Menționează-le pe scurt în `alerteMedicale`. Dacă nu identifici nimic, lasă lista goală `[]`.\n7.  **Medicamentele prescrise** de doctor → Secțiunea `reteta.medicatie`. Dacă nu se prescrie nimic, lasă lista goală `[]`.\n8.  **Instrucțiunile** date de doctor pentru medicamente → Secțiunea `reteta.instructiuni`.\n9.  **Folosește diacritice** românești corecte.\n\nRĂSPUNDE STRICT ÎN FORMAT JSON (fără markdown, fără ```json):\n{\n  \"rezumat\": \"Rezumă consultația în 2-3 propoziții clare pentru pacient, incluzând simptomele principale și planul general.\",\n  \"raportSOAP\": {\n    \"Subiectiv\": \"Ce spune PACIENTUL despre simptome, istoric, durată, context etc.\",\n    \"Obiectiv\": \"[INFORMAȚIE LIPSĂ] sau menționează observațiile/examinările descrise de DOCTOR.\",\n    \"Analiza\": \"[INFORMAȚIE LIPSĂ] sau diagnosticul/evaluarea formulată de DOCTOR.\",\n    \"Plan\": \"[INFORMAȚIE LIPSĂ] sau planul de tratament/investigații menționat de DOCTOR.\"\n  },\n  \"diagnosticePosibile\": [\"Listă cu posibile diagnostice menționate sau deduse din conversație\"],\n  \"coduriICD10Sugerate\": [\"Listă de string-uri cu coduri ICD-10 sugerate pe baza Analizei (ex: ['J06.9', 'R51'])\"],\n  \"pasiUrmatori\": [\"Listă clară de acțiuni viitoare menționate de DOCTOR (ex: 'Analize de urină', 'Trimitere cardiologie')\"],\n  \"reteta\": {\n     \"medicatie\": [\"Listă de medicamente prescrise explicit de DOCTOR (ex: ['Paracetamol 500mg', 'Nurofen 200mg'])\"],\n     \"instructiuni\": \"Instrucțiunile de administrare menționate de DOCTOR pentru medicamentele prescrise.\",\n     \"numeDoctor\": \"Numele doctorului dacă este menționat în conversație.\"\n  },\n  \"alerteMedicale\": [\"Listă de string-uri cu potențiale alerte/atenționări identificate din conversație (alergii, interacțiuni etc.)\"]\n}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "aea0cf3f-60d7-47d1-9455-7302098bf8d3",
+      "name": "Generate SOAP with Gemini",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        32
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Jq2VcoSxb736GP4n",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== PREGĂTIRE DATE PENTRU GOOGLE SHEETS (CU DIARIZATION) =====\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  // ===== EXTRACT SOAP FROM GEMINI =====\n  let analysisData = {};\n  \n  try {\n    if (item.json.content?.parts?.[0]?.text) {\n      const text = item.json.content.parts[0].text;\n      const cleaned = text.replace(/```json\\n?/g, '').replace(/```\\\\n?/g, '').trim();\n      analysisData = JSON.parse(cleaned);\n    }\n  } catch (error) {\n    console.error('❌ Parse error:', error);\n  }\n  \n  // Extragem datele parsand JSON-ul de la Gemini\n  const soapData = analysisData.raportSOAP || {};\n  const reteteData = analysisData.reteta?.medicatie || [];\n  const reteteInstructiuni = analysisData.reteta?.instructiuni || \"\";\n  const rezumatData = analysisData.rezumat || '[INFORMAȚIE LIPSĂ]';\n  const alerteData = analysisData.diagnosticePosibile || []; // Folosim diagnosticele ca alerte\n\n  // ===== GET METADATA FROM VALIDATE TRANSCRIPTION NODE =====\n  const validationNode = $('Validate Transcription').item.json;\n  const metadata = validationNode.transcription_metadata || {};\n  const transcript = validationNode.transcript || validationNode.text || '';\n  const transcriptWithSpeakers = validationNode.transcript_with_speakers || transcript;\n  const speakerCount = validationNode.speaker_count || 0;\n  \n  // ===== GET PATIENT DATA (from webhook) =====\n  const webhookData = $('Webhook Trigger1').item.json.body || {};\n  const patientName = webhookData.patient_name || 'N/A';\n  const patientCNP = webhookData.patient_cnp || 'N/A';\n  \n  console.log('👤 Date pacient:', { patientName, patientCNP });\n  console.log('📊 Metadata transcriție:', metadata);\n  \n  // ===== FORMAT RETETE =====\n  const reteteString = reteteData.length > 0 \n    ? reteteData.map((med, i) => `${i+1}. ${med}`).join(' | ') + ` | Instructiuni: ${reteteInstructiuni}`\n    : 'Fără rețete prescrise';\n  \n  // ===== FORMAT ALERTE =====\n  const alerteString = alerteData.length > 0 \n    ? alerteData.join(' | ')\n    : 'Nicio alertă';\n  \n  // ===== BUILD COMPLETE DATA OBJECT =====\n  const completeData = {\n    // Timestamp\n    timestamp: new Date().toISOString(),\n    data_consultatie: new Date().toLocaleDateString('ro-RO'),\n    ora_consultatie: new Date().toLocaleTimeString('ro-RO'),\n    \n    // Date pacient\n    nume_pacient: patientName,\n    cnp_pacient: patientCNP,\n    \n    // SOAP (folosind noua structură)\n    soap_subiectiv: soapData.Subiectiv || '[INFORMAȚIE LIPSĂ]',\n    soap_obiectiv: soapData.Obiectiv || '[INFORMAȚIE LIPSĂ]',\n    soap_evaluare: soapData.Analiza || '[INFORMAȚIE LIPSĂ]', // Sursa era 'Analiza'\n    soap_plan: soapData.Plan || '[INFORMAȚIE LIPSĂ]',\n    \n    // Rețete\n    retete: reteteString,\n    numar_retete: reteteData.length,\n    \n    // Rezumat și alerte\n    rezumat_pacient: rezumatData,\n    alerte: alerteString,\n    \n    // Transcriere\n    transcriere_cu_vorbitori: transcriptWithSpeakers.substring(0, 1000) + (transcriptWithSpeakers.length > 1000 ? '...' : ''),\n    transcriere_text_simplu: transcript.substring(0, 500) + (transcript.length > 500 ? '...' : ''),\n    \n    // Metadata transcriție\n    numar_vorbitori: speakerCount,\n    diarization_activa: metadata.has_diarization || false,\n    transcriere_lungime: metadata.char_count || 0,\n    transcriere_cuvinte: metadata.word_count || 0,\n    tip_consultatie: metadata.consultation_type || 'N/A',\n    completitudine: metadata.completeness_percent || 0,\n    calitate_score: metadata.quality_score || 0,\n    calitate_label: metadata.quality_label || 'N/A',\n    termeni_medicali_count: metadata.medical_terms_count || 0,\n    \n    // Păstrăm răspunsul original pentru restore\n    _original_response: item.json, // Acesta este răspunsul original de la Gemini\n    _original_transcript: transcript,\n    _original_transcript_speakers: transcriptWithSpeakers,\n    _metadata_full: metadata\n  };\n  \n  console.log('📊 Date complete pregătite pentru Sheets');\n  \n  results.push({\n    json: completeData\n  });\n}\n\nreturn results;"
+      },
+      "id": "013afa7c-5a8a-48b5-81a9-6a58395118b8",
+      "name": "Prepare Data for Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2352,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "188EFWnH51WNyrPovXfcJ7n6JnxrszKTMkJ72JXJhlXc",
+          "mode": "list",
+          "cachedResultName": "MediScribe_Template",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/188EFWnH51WNyrPovXfcJ7n6JnxrszKTMkJ72JXJhlXc/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1154986003,
+          "mode": "list",
+          "cachedResultName": "MediScribe_Template",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/188EFWnH51WNyrPovXfcJ7n6JnxrszKTMkJ72JXJhlXc/edit#gid=1154986003"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "data_consultatie": "={{ $json.data_consultatie }}",
+            "ora_consultatie": "={{ $json.ora_consultatie }}",
+            "nume_pacient": "={{ $json.nume_pacient }}",
+            "cnp_pacient": "={{ $json.cnp_pacient }}",
+            "soap_subiectiv": "={{ $json.soap_subiectiv }}",
+            "soap_obiectiv": "={{ $json.soap_obiectiv }}",
+            "soap_evaluare": "={{ $json.soap_evaluare }}",
+            "soap_plan": "={{ $json.soap_plan }}",
+            "retete": "={{ $json.retete }}",
+            "numar_retete": "={{ $json.numar_retete }}",
+            "rezumat_pacient": "={{ $json.rezumat_pacient }}",
+            "transcriere_lungime": "={{ $json.transcriere_lungime }}",
+            "transcriere_cuvinte": "={{ $json.transcriere_cuvinte }}",
+            "tip_consultatie": "={{ $json.tip_consultatie }}",
+            "completitudine": "={{ $json.completitudine }}",
+            "calitate_score": "={{ $json.calitate_score }}",
+            "calitate_label": "={{ $json.calitate_label }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "data_consultatie",
+              "displayName": "data_consultatie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ora_consultatie",
+              "displayName": "ora_consultatie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "nume_pacient",
+              "displayName": "nume_pacient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "cnp_pacient",
+              "displayName": "cnp_pacient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_subiectiv",
+              "displayName": "soap_subiectiv",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_obiectiv",
+              "displayName": "soap_obiectiv",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_evaluare",
+              "displayName": "soap_evaluare",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "soap_plan",
+              "displayName": "soap_plan",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "retete",
+              "displayName": "retete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "numar_retete",
+              "displayName": "numar_retete",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rezumat_pacient",
+              "displayName": "rezumat_pacient",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "transcriere_lungime",
+              "displayName": "transcriere_lungime",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "transcriere_cuvinte",
+              "displayName": "transcriere_cuvinte",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tip_consultatie",
+              "displayName": "tip_consultatie",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "completitudine",
+              "displayName": "completitudine",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calitate_score",
+              "displayName": "calitate_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calitate_label",
+              "displayName": "calitate_label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "fdb2dd6c-5eaf-4698-983c-00701a7b5652",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        2576,
+        32
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "8UI3OYc19LY2Vyig",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \n    analysis: JSON.parse($('Generate SOAP with Gemini').item.json.content.parts[0].text), \n    transcription: $('Validate Transcription').item.json.transcript_with_speakers \n   } \n}}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "ef96d28b-d161-4516-8375-fd854adfaa52",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2800,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "medical-assistant",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "72881f02-8b1b-4661-9fad-4435379cb1c7",
+      "name": "Webhook Trigger1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1328,
+        32
+      ],
+      "webhookId": "de5f062a-bfeb-4c20-9d61-5596a6eb627e"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepgram.com/v1/listen",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "whisper"
+            },
+            {
+              "name": "language",
+              "value": "ro"
+            },
+            {
+              "name": "punctuate",
+              "value": "true"
+            },
+            {
+              "name": "diarize",
+              "value": "true"
+            },
+            {
+              "name": "smart_format",
+              "value": "true"
+            },
+            {
+              "name": "utterances",
+              "value": "true"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "=data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1552,
+        32
+      ],
+      "id": "1cf6dedf-4849-4ad4-b8da-092b7b4fb30c",
+      "name": "Deepgram",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "fyTbJzZ66CWAV0Ny",
+          "name": "Deepgram"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Validate Transcription": {
+      "main": [
+        [
+          {
+            "node": "Generate SOAP with Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate SOAP with Gemini": {
+      "main": [
+        [
+          {
+            "node": "Prepare Data for Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Data for Sheets": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Deepgram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deepgram": {
+      "main": [
+        [
+          {
+            "node": "Validate Transcription",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "c7c2078c-b7b3-4a15-87b2-41302dd70ffd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8b288455c98dd89b1683c1f42341ee1e9b37a04d731a8c359e81baed65b07cec"
+  },
+  "id": "EZvoiSldMjDfpbjK",
+  "tags": []
+}
