@@ -416,7 +416,7 @@
     {
       "parameters": {
         "descriptionType": "manual",
-        "toolDescription": "Caută un medicament în Nomenclatorul medicamentelor din România.",
+        "toolDescription": "FOLOSEȘTE ACEASTĂ UNEALTĂ pentru a căuta un medicament în Nomenclatorul oficial din România. Primește numele comercial al medicamentului (DOAR numele de bază, fără doză sau formă) și returnează informații complete incluzând DCI-ul (substanța activă). EXEMPLU: Pentru 'Paracetamol 500mg' caută doar 'Paracetamol'. OBLIGATORIU: Folosește această unealtă ÎNAINTE de a apela get_rxcui.",
         "operation": "getAll",
         "tableId": "NOMENCLATOR",
         "limit": 5,
@@ -447,14 +447,14 @@
     },
     {
       "parameters": {
-        "toolDescription": "Obține codul RxCUI pentru un medicament din baza de date RxNorm (NIH).",
+        "toolDescription": "FOLOSEȘTE ACEASTĂ UNEALTĂ pentru a obține codul RxCUI standardizat necesar pentru verificarea interacțiunilor medicamentoase. Primește DCI-ul (substanța activă în limba latină, ex: 'Ibuprofenum', 'Paracetamolum') obținut de la search_nomenclator și returnează codul RxCUI. IMPORTANT: Trimite DOAR DCI-ul, NU numele comercial. Extrage câmpul 'idGroup.rxnormId[0]' din răspuns.",
         "url": "https://rxnav.nlm.nih.gov/REST/rxcui.json",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
             {
               "name": "name",
-              "value": "{{ $input.nume_medicament }}"
+              "value": "={{ $input.nume_medicament }}"
             }
           ]
         },
@@ -468,6 +468,30 @@
       ],
       "id": "9ab2eaec-c56f-41ed-9321-88a4c77f018f",
       "name": "get_rxcui"
+    },
+    {
+      "parameters": {
+        "toolDescription": "FOLOSEȘTE ACEASTĂ UNEALTĂ pentru a verifica interacțiunile medicamentoase între TOATE medicamentele prescrise. Primește un string cu TOATE codurile RxCUI concatenate cu '+' (ex: '161+5640+10582'). Returnează lista completă de interacțiuni detectate cu descrieri detaliate. IMPORTANT: Apelează DOAR DUPĂ ce ai colectat TOATE codurile RxCUI pentru toate medicamentele prescrise. NU apela separat pentru fiecare medicament - apelează o singură dată cu toate codurile.",
+        "url": "https://rxnav.nlm.nih.gov/REST/interaction/list.json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "rxcuis",
+              "value": "={{ $input.rxcuis }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.3,
+      "position": [
+        2256,
+        384
+      ],
+      "id": "7c8f9d3a-2b4e-4f5c-9a6d-8e1f2a3b4c5d",
+      "name": "verificare_interactiune"
     },
     {
       "parameters": {
@@ -719,6 +743,17 @@
       ]
     },
     "get_rxcui": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "verificare_interactiune": {
       "ai_tool": [
         [
           {
