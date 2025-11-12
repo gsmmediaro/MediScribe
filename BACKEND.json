@@ -279,13 +279,21 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { \n    analysis: JSON.parse($('Generate SOAP with Gemini').item.json.content.parts[0].text), \n    transcription: $('Validate Transcription').item.json.transcript_with_speakers \n   } \n}}",
+        "responseBody": "={{ \n  {\n    analysis: $('AI Agent').item.json.output,\n    transcription: $('Validate Transcription').item.json.transcript_with_speakers\n  }\n}}",
         "options": {
           "responseHeaders": {
             "entries": [
               {
                 "name": "Content-Type",
                 "value": "application/json; charset=utf-8"
+              },
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
               }
             ]
           }
