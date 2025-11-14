@@ -1,8 +1,8 @@
 // @/components/AnalysisView.tsx
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { AnalysisResult, SoapReport } from '../types';
-import { ClipboardIcon, ClipboardCheckIcon, RefreshCwIcon, PrinterIcon, UploadCloudIcon, SaveIcon, FileTextIcon, AlertTriangleIcon, BadgeInfoIcon } from './Icons';
+import { ClipboardIcon, ClipboardCheckIcon, RefreshCwIcon, PrinterIcon, UploadCloudIcon, FileTextIcon, AlertTriangleIcon, BadgeInfoIcon } from './Icons';
 
 interface AnalysisViewProps {
   result: AnalysisResult & { patientName?: string; patientCnp?: string; };
@@ -33,7 +33,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
   const [signature, setSignature] = useState<string | null>(null);
   const signatureInputRef = useRef<HTMLInputElement>(null);
 
-  const [editableResult, setEditableResult] = useState<EditableResult>(() => ({
+  const [editableResult, setEditableResult] = useState<EditableResult>({
     rezumat: result.rezumat || '',
     raportSOAP: {
       Subiectiv: result.raportSOAP?.Subiectiv || '',
@@ -50,9 +50,10 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
       numeDoctor: result.reteta?.numeDoctor || '',
     },
     alerteMedicale: Array.isArray(result.alerteMedicale) ? [...result.alerteMedicale] : [],
-  }));
+  });
 
-  const handleInputChange = (
+  // Use useCallback to memoize the input change handler
+  const handleInputChange = useCallback((
     field: keyof EditableResult | `raportSOAP.${keyof SoapReport}` | 'reteta.instructiuni',
     value: string
   ) => {
@@ -81,8 +82,9 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
       }
       return prev;
     });
-  };
+  }, []);
 
+  // Initialize state only once when result changes
   useEffect(() => {
     const savedSignature = localStorage.getItem('doctorSignature');
     if (savedSignature) {
@@ -108,11 +110,18 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
     });
   }, [result]);
 
-  const hasPrescription = result.reteta && Array.isArray(result.reteta.medicatie) && result.reteta.medicatie.length > 0;
-  // Folosim starea editabilă aici, deoarece este actualizată în useEffect
-  const hasAlerts = editableResult.alerteMedicale && editableResult.alerteMedicale.length > 0;
+  // Memoize computed values
+  const hasPrescription = useMemo(() => 
+    result.reteta && Array.isArray(result.reteta.medicatie) && result.reteta.medicatie.length > 0,
+    [result.reteta]
+  );
 
-  const handleSignatureUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const hasAlerts = useMemo(() => 
+    editableResult.alerteMedicale && editableResult.alerteMedicale.length > 0,
+    [editableResult.alerteMedicale]
+  );
+
+  const handleSignatureUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
     if (file) {
       const reader = new FileReader();
@@ -123,24 +132,27 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
       };
       reader.readAsDataURL(file);
     }
-   };
-  const handlePrint = () => {
+   }, []);
+  
+  const handlePrint = useCallback(() => {
           if (!signature && hasPrescription) {
       if (!confirm("Atenție: Nu ați adăugat o semnătură pentru rețetă. Doriți să printați oricum?")) {
         return;
       }
     }
     window.print();
-   };
-  const handleCopy = (text: string, id: string) => {
+   }, [signature, hasPrescription]);
+  
+  const handleCopy = useCallback((text: string, id: string) => {
           navigator.clipboard.writeText(text);
-    setCopiedStates({ ...copiedStates, [id]: true });
+    setCopiedStates(prev => ({ ...prev, [id]: true }));
     setTimeout(() => {
-      setCopiedStates({ ...copiedStates, [id]: false });
+      setCopiedStates(prev => ({ ...prev, [id]: false }));
     }, 2000);
-   };
+   }, []);
 
-  const getFullTextForCopy = (tab: Tab): string => {
+  // Memoize getFullTextForCopy to avoid recalculation on every render
+  const getFullTextForCopy = useCallback((tab: Tab): string => {
     const diagnosticeText = (result.diagnosticePosibile || []).join('\n- ');
     const coduriText = (result.coduriICD10Sugerate || []).join(', ');
     const pasiText = (result.pasiUrmatori || []).join('\n- ');
@@ -151,23 +163,26 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
     switch (tab) {
         case 'rezumat':
             return `Rezumat Consultație:\n\n${editableResult.rezumat}`;
-        case 'raport':
+        case 'raport': {
             let raport = `Raport SOAP:\n\nSubiectiv:\n${editableResult.raportSOAP.Subiectiv}\n\nObiectiv:\n${editableResult.raportSOAP.Obiectiv}\n\nAnaliză:\n${editableResult.raportSOAP.Analiza}\n\nPlan:\n${editableResult.raportSOAP.Plan}`;
             if (coduriText) {
                 raport += `\n\nCoduri ICD-10 Sugerate: ${coduriText}`;
             }
             return raport;
-        case 'diagnostice':
+        }
+        case 'diagnostice': {
              let diagText = `Diagnostice Posibile:\n\n- ${diagnosticeText}`;
              if (coduriText) {
                  diagText += `\n\nCoduri ICD-10 Sugerate: ${coduriText}`;
              }
              return diagText;
+        }
         case 'pasi':
             return `Pași Următori Recomandați:\n\n- ${pasiText}`;
-        case 'reteta':
+        case 'reteta': {
             const patientInfo = `Pacient: ${result.patientName || 'Nespecificat'}\nCNP: ${result.patientCnp || 'Nespecificat'}\n`;
             return `Rețetă Medicală:\n\n${patientInfo}Medic: Dr. ${result.reteta?.numeDoctor || 'Nespecificat'}\n\nMedicație:\n- ${medicatieText}\n\nInstrucțiuni:\n${editableResult.reteta.instructiuni}`;
+        }
         case 'transcript':
             return `Transcriere Brută:\n\n${rawTranscript}`;
         case 'alerte':
@@ -175,10 +190,10 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
         default:
             return '';
     }
-  };
+  }, [editableResult, result, rawTranscript]);
 
-  // Definim tipul corect pentru array-ul de tab-uri
-  const tabs: Array<{ id: Tab; label: string; icon?: React.FC<any> }> = [
+  // Definim tipul corect pentru array-ul de tab-uri - Memoize to prevent recreation
+  const tabs: Array<{ id: Tab; label: string; icon?: React.FC<React.SVGProps<SVGSVGElement>> }> = useMemo(() => [
     { id: 'rezumat', label: 'Rezumat' },
     { id: 'raport', label: 'Raport SOAP' },
     { id: 'diagnostice', label: 'Diagnostice' },
@@ -187,7 +202,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
     { id: 'transcript', label: 'Transcriere', icon: FileTextIcon },
     // Adăugăm tab-ul Alerte doar dacă există alerte
     ...(hasAlerts ? [{ id: 'alerte' as Tab, label: 'Alerte', icon: AlertTriangleIcon }] : []),
-  ];
+  ], [hasAlerts]);
 
   const renderEditableField = (
         label: string,

@@ -1,7 +1,7 @@
 // @/App.tsx
 // Premium UI with ProcessingProgress integration and enhanced UX
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { AnalysisResult } from './types';
 import Header from './components/Header';
@@ -44,7 +44,7 @@ const App: React.FC = () => {
   // Combined error state
   const error = validationError || recorderError || processingError;
 
-  const handleStartTranscription = async () => {
+  const handleStartTranscription = useCallback(async () => {
     setValidationError(null);
     clearRecorderError();
 
@@ -65,9 +65,9 @@ const App: React.FC = () => {
     }
 
     await startRecording();
-  };
+  }, [patientName, patientCnp, clearRecorderError, startRecording]);
 
-  const handleStopTranscription = async () => {
+  const handleStopTranscription = useCallback(async () => {
     const audioBlob = await stopRecording();
 
     if (audioBlob) {
@@ -79,13 +79,13 @@ const App: React.FC = () => {
         N8N_WEBHOOK_URL
       );
     }
-  };
+  }, [stopRecording, processAudio, patientName, patientCnp, N8N_WEBHOOK_URL]);
 
-  const triggerFileUpload = () => {
+  const triggerFileUpload = useCallback(() => {
     fileInputRef.current?.click();
-  };
+  }, []);
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
       return;
@@ -122,15 +122,15 @@ const App: React.FC = () => {
     await processAudio(file, file.name, patientName, patientCnp, N8N_WEBHOOK_URL);
 
     if (fileInputRef.current) fileInputRef.current.value = '';
-  };
+  }, [patientName, patientCnp, processAudio, N8N_WEBHOOK_URL]);
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     resetProcessing();
     setValidationError(null);
     clearRecorderError();
     setPatientName('');
     setPatientCnp('');
-  };
+  }, [resetProcessing, clearRecorderError]);
 
   return (
     <div className="min-h-screen text-gray-800 dark:text-gray-200 flex flex-col items-center p-4 sm:p-6 md:p-8 relative overflow-hidden">
@@ -138,9 +138,10 @@ const App: React.FC = () => {
       <div className="fixed inset-0 -z-10">
         <div className="absolute inset-0 bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 dark:from-gray-900 dark:via-blue-900/20 dark:to-purple-900/20" />
 
-        {/* Animated Orbs */}
+        {/* Animated Orbs - optimized with will-change */}
         <motion.div
           className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-400/20 rounded-full blur-3xl"
+          style={{ willChange: 'transform' }}
           animate={{
             x: [0, 100, 0],
             y: [0, -100, 0],
@@ -154,6 +155,7 @@ const App: React.FC = () => {
         />
         <motion.div
           className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-400/20 rounded-full blur-3xl"
+          style={{ willChange: 'transform' }}
           animate={{
             x: [0, -100, 0],
             y: [0, 100, 0],
