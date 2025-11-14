@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import type { AnalysisResult, SoapReport } from '../types';
-import { ClipboardIcon, ClipboardCheckIcon, RefreshCwIcon, PrinterIcon, UploadCloudIcon, SaveIcon, FileTextIcon, AlertTriangleIcon, BadgeInfoIcon } from './Icons';
+import { ClipboardIcon, ClipboardCheckIcon, RefreshCwIcon, PrinterIcon, UploadCloudIcon, FileTextIcon, AlertTriangleIcon, BadgeInfoIcon } from './Icons';
 
 interface AnalysisViewProps {
   result: AnalysisResult & { patientName?: string; patientCnp?: string; };
@@ -27,30 +27,33 @@ type EditableResult = {
   alerteMedicale?: string[];
 };
 
+// Helper function to create editable result from analysis result
+const createEditableResult = (result: AnalysisResult): EditableResult => ({
+  rezumat: result.rezumat || '',
+  raportSOAP: {
+    Subiectiv: result.raportSOAP?.Subiectiv || '',
+    Obiectiv: result.raportSOAP?.Obiectiv || '',
+    Analiza: result.raportSOAP?.Analiza || '',
+    Plan: result.raportSOAP?.Plan || '',
+  },
+  diagnosticePosibile: Array.isArray(result.diagnosticePosibile) ? [...result.diagnosticePosibile] : [],
+  coduriICD10Sugerate: Array.isArray(result.coduriICD10Sugerate) ? [...result.coduriICD10Sugerate] : [],
+  pasiUrmatori: Array.isArray(result.pasiUrmatori) ? [...result.pasiUrmatori] : [],
+  reteta: {
+    medicatie: Array.isArray(result.reteta?.medicatie) ? [...result.reteta.medicatie] : [],
+    instructiuni: result.reteta?.instructiuni || '',
+    numeDoctor: result.reteta?.numeDoctor || '',
+  },
+  alerteMedicale: Array.isArray(result.alerteMedicale) ? [...result.alerteMedicale] : [],
+});
+
 const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onReset }) => {
   const [activeTab, setActiveTab] = useState<Tab>('raport');
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
   const [signature, setSignature] = useState<string | null>(null);
   const signatureInputRef = useRef<HTMLInputElement>(null);
 
-  const [editableResult, setEditableResult] = useState<EditableResult>(() => ({
-    rezumat: result.rezumat || '',
-    raportSOAP: {
-      Subiectiv: result.raportSOAP?.Subiectiv || '',
-      Obiectiv: result.raportSOAP?.Obiectiv || '',
-      Analiza: result.raportSOAP?.Analiza || '',
-      Plan: result.raportSOAP?.Plan || '',
-    },
-    diagnosticePosibile: Array.isArray(result.diagnosticePosibile) ? [...result.diagnosticePosibile] : [],
-    coduriICD10Sugerate: Array.isArray(result.coduriICD10Sugerate) ? [...result.coduriICD10Sugerate] : [],
-    pasiUrmatori: Array.isArray(result.pasiUrmatori) ? [...result.pasiUrmatori] : [],
-    reteta: {
-      medicatie: Array.isArray(result.reteta?.medicatie) ? [...result.reteta.medicatie] : [],
-      instructiuni: result.reteta?.instructiuni || '',
-      numeDoctor: result.reteta?.numeDoctor || '',
-    },
-    alerteMedicale: Array.isArray(result.alerteMedicale) ? [...result.alerteMedicale] : [],
-  }));
+  const [editableResult, setEditableResult] = useState<EditableResult>(() => createEditableResult(result));
 
   const handleInputChange = (
     field: keyof EditableResult | `raportSOAP.${keyof SoapReport}` | 'reteta.instructiuni',
@@ -88,24 +91,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
     if (savedSignature) {
       setSignature(savedSignature);
     }
-    setEditableResult({
-      rezumat: result.rezumat || '',
-      raportSOAP: {
-        Subiectiv: result.raportSOAP?.Subiectiv || '',
-        Obiectiv: result.raportSOAP?.Obiectiv || '',
-        Analiza: result.raportSOAP?.Analiza || '',
-        Plan: result.raportSOAP?.Plan || '',
-      },
-      diagnosticePosibile: Array.isArray(result.diagnosticePosibile) ? [...result.diagnosticePosibile] : [],
-      coduriICD10Sugerate: Array.isArray(result.coduriICD10Sugerate) ? [...result.coduriICD10Sugerate] : [],
-      pasiUrmatori: Array.isArray(result.pasiUrmatori) ? [...result.pasiUrmatori] : [],
-      reteta: {
-        medicatie: Array.isArray(result.reteta?.medicatie) ? [...result.reteta.medicatie] : [],
-        instructiuni: result.reteta?.instructiuni || '',
-        numeDoctor: result.reteta?.numeDoctor || '',
-      },
-      alerteMedicale: Array.isArray(result.alerteMedicale) ? [...result.alerteMedicale] : [],
-    });
+    setEditableResult(createEditableResult(result));
   }, [result]);
 
   const hasPrescription = result.reteta && Array.isArray(result.reteta.medicatie) && result.reteta.medicatie.length > 0;
@@ -151,23 +137,26 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
     switch (tab) {
         case 'rezumat':
             return `Rezumat Consultație:\n\n${editableResult.rezumat}`;
-        case 'raport':
+        case 'raport': {
             let raport = `Raport SOAP:\n\nSubiectiv:\n${editableResult.raportSOAP.Subiectiv}\n\nObiectiv:\n${editableResult.raportSOAP.Obiectiv}\n\nAnaliză:\n${editableResult.raportSOAP.Analiza}\n\nPlan:\n${editableResult.raportSOAP.Plan}`;
             if (coduriText) {
                 raport += `\n\nCoduri ICD-10 Sugerate: ${coduriText}`;
             }
             return raport;
-        case 'diagnostice':
+        }
+        case 'diagnostice': {
              let diagText = `Diagnostice Posibile:\n\n- ${diagnosticeText}`;
              if (coduriText) {
                  diagText += `\n\nCoduri ICD-10 Sugerate: ${coduriText}`;
              }
              return diagText;
+        }
         case 'pasi':
             return `Pași Următori Recomandați:\n\n- ${pasiText}`;
-        case 'reteta':
+        case 'reteta': {
             const patientInfo = `Pacient: ${result.patientName || 'Nespecificat'}\nCNP: ${result.patientCnp || 'Nespecificat'}\n`;
             return `Rețetă Medicală:\n\n${patientInfo}Medic: Dr. ${result.reteta?.numeDoctor || 'Nespecificat'}\n\nMedicație:\n- ${medicatieText}\n\nInstrucțiuni:\n${editableResult.reteta.instructiuni}`;
+        }
         case 'transcript':
             return `Transcriere Brută:\n\n${rawTranscript}`;
         case 'alerte':
@@ -178,7 +167,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
   };
 
   // Definim tipul corect pentru array-ul de tab-uri
-  const tabs: Array<{ id: Tab; label: string; icon?: React.FC<any> }> = [
+  const tabs: Array<{ id: Tab; label: string; icon?: React.ComponentType<{ className?: string }> }> = [
     { id: 'rezumat', label: 'Rezumat' },
     { id: 'raport', label: 'Raport SOAP' },
     { id: 'diagnostice', label: 'Diagnostice' },

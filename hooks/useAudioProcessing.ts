@@ -128,7 +128,7 @@ export const useAudioProcessing = (): UseAudioProcessingReturn => {
         );
       }
 
-      const validatedData: N8nResponse = validationResult.data;
+      const validatedData = validationResult.data as N8nResponse;
 
       // Add patient data to analysis result
       const finalAnalysisResult: AnalysisResult & { patientName?: string; patientCnp?: string } = {
