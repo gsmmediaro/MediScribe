@@ -3,7 +3,10 @@
 
 import { useState, useCallback } from 'react';
 import { z } from 'zod';
-import type { AnalysisResult, N8nResponse } from '../types';
+import type { AnalysisResult } from '../types';
+
+// Helper to check if running in development
+const isDevelopment = import.meta.env.DEV;
 
 // Zod schema for validation
 const N8nResponseSchema = z.object({
@@ -86,11 +89,14 @@ export const useAudioProcessing = (): UseAudioProcessingReturn => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 180000); // 180 seconds = 3 minutes
 
-      console.log('📤 Trimitere cerere către n8n webhook...');
-      console.log('🔗 URL:', webhookUrl);
-      console.log('👤 Pacient:', patientName, patientCNP || '(fără CNP)');
-      console.log('📁 Fișier:', fileName, '(' + Math.round(audioBlob.size / 1024) + ' KB)');
-      console.log('⏱️ Timeout: 180 secunde (3 minute)');
+      // Only log in development mode
+      if (isDevelopment) {
+        console.log('📤 Trimitere cerere către n8n webhook...');
+        console.log('🔗 URL:', webhookUrl);
+        console.log('👤 Pacient:', patientName, patientCNP || '(fără CNP)');
+        console.log('📁 Fișier:', fileName, '(' + Math.round(audioBlob.size / 1024) + ' KB)');
+        console.log('⏱️ Timeout: 180 secunde (3 minute)');
+      }
 
       const response = await fetch(webhookUrl, {
         method: 'POST',
@@ -100,23 +106,31 @@ export const useAudioProcessing = (): UseAudioProcessingReturn => {
 
       clearTimeout(timeoutId);
 
-      console.log('📥 Răspuns primit:', response.status, response.statusText);
+      if (isDevelopment) {
+        console.log('📥 Răspuns primit:', response.status, response.statusText);
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('❌ Răspuns de eroare de la n8n:', errorText);
+        if (isDevelopment) {
+          console.error('❌ Răspuns de eroare de la n8n:', errorText);
+        }
         throw new Error(`Eroare de la serverul n8n: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
-      console.log('📊 Date primite de la n8n:', data);
+      if (isDevelopment) {
+        console.log('📊 Date primite de la n8n:', data);
+      }
 
       // Validate response structure with Zod
       const validationResult = N8nResponseSchema.safeParse(data);
 
       if (!validationResult.success) {
-        console.error('❌ Structura răspunsului n8n invalidă:', data);
-        console.error('❌ Erori de validare Zod:', validationResult.error.format());
+        if (isDevelopment) {
+          console.error('❌ Structura răspunsului n8n invalidă:', data);
+          console.error('❌ Erori de validare Zod:', validationResult.error.format());
+        }
 
         // Provide helpful error message
         const errorDetails = validationResult.error.errors
@@ -128,22 +142,26 @@ export const useAudioProcessing = (): UseAudioProcessingReturn => {
         );
       }
 
-      const validatedData = validationResult.data as N8nResponse;
+      const validatedData = validationResult.data;
 
-      // Add patient data to analysis result
-      const finalAnalysisResult: AnalysisResult & { patientName?: string; patientCnp?: string } = {
+      // Add patient data to analysis result - cast to correct type
+      const finalAnalysisResult = {
         ...validatedData.analysis,
         patientName: patientName,
         patientCnp: patientCNP
-      };
+      } as AnalysisResult & { patientName?: string; patientCnp?: string };
 
       setAnalysisResult(finalAnalysisResult);
       setRawTranscript(validatedData.transcription);
 
-      console.log('✅ Procesare completă cu succes!');
+      if (isDevelopment) {
+        console.log('✅ Procesare completă cu succes!');
+      }
 
     } catch (err: unknown) {
-      console.error('❌ Failed to process audio:', err);
+      if (isDevelopment) {
+        console.error('❌ Failed to process audio:', err);
+      }
 
       if (err instanceof Error) {
         if (err.name === 'AbortError') {

@@ -17,16 +17,21 @@ export interface ValidationResult {
   error?: string;
 }
 
+// Cache compiled regex patterns for better performance
+const CNP_PATTERN = /^\d{13}$/;
+const NAME_PATTERN = /^[a-zA-ZăâîșțĂÂÎȘȚ\s\-']+$/;
+const AUDIO_EXTENSION_PATTERN = /\.(wav|mp3|webm|ogg|m4a|mp4)$/i;
+
 export const validateCNP = (cnp: string): ValidationResult => {
   // Remove spaces and dashes
   const cleanCNP = cnp.replace(/[\s-]/g, '');
   
-  // Check if empty (CNP is optional)
+  // Check if empty (CNP is optional) - early return
   if (cleanCNP.length === 0) {
     return { isValid: true };
   }
   
-  // Check length
+  // Check length - early return
   if (cleanCNP.length !== 13) {
     return {
       isValid: false,
@@ -34,8 +39,8 @@ export const validateCNP = (cnp: string): ValidationResult => {
     };
   }
   
-  // Check if all characters are digits
-  if (!/^\d{13}$/.test(cleanCNP)) {
+  // Check if all characters are digits - use cached regex
+  if (!CNP_PATTERN.test(cleanCNP)) {
     return {
       isValid: false,
       error: 'CNP-ul trebuie să conțină doar cifre'
@@ -105,6 +110,7 @@ export const validateCNP = (cnp: string): ValidationResult => {
 export const validatePatientName = (name: string): ValidationResult => {
   const trimmedName = name.trim();
   
+  // Early return for empty
   if (trimmedName.length === 0) {
     return {
       isValid: false,
@@ -112,6 +118,7 @@ export const validatePatientName = (name: string): ValidationResult => {
     };
   }
   
+  // Early return for too short
   if (trimmedName.length < 3) {
     return {
       isValid: false,
@@ -119,6 +126,7 @@ export const validatePatientName = (name: string): ValidationResult => {
     };
   }
   
+  // Early return for too long
   if (trimmedName.length > 100) {
     return {
       isValid: false,
@@ -126,8 +134,8 @@ export const validatePatientName = (name: string): ValidationResult => {
     };
   }
   
-  // Check for valid characters (letters, spaces, hyphens, apostrophes)
-  if (!/^[a-zA-ZăâîșțĂÂÎȘȚ\s\-']+$/.test(trimmedName)) {
+  // Check for valid characters (letters, spaces, hyphens, apostrophes) - use cached regex
+  if (!NAME_PATTERN.test(trimmedName)) {
     return {
       isValid: false,
       error: 'Numele poate conține doar litere, spații și cratime'
@@ -150,7 +158,7 @@ export const validatePatientName = (name: string): ValidationResult => {
  * Validates audio file
  */
 export const validateAudioFile = (file: File): ValidationResult => {
-  // Check file type
+  // Check file type - using cached regex for extension check
   const validTypes = [
     'audio/wav',
     'audio/mp3',
@@ -162,14 +170,14 @@ export const validateAudioFile = (file: File): ValidationResult => {
     'audio/mp4'
   ];
   
-  if (!validTypes.includes(file.type) && !file.name.match(/\.(wav|mp3|webm|ogg|m4a|mp4)$/i)) {
+  if (!validTypes.includes(file.type) && !AUDIO_EXTENSION_PATTERN.test(file.name)) {
     return {
       isValid: false,
       error: 'Format audio invalid. Utilizați: WAV, MP3, WebM, OGG sau M4A'
     };
   }
   
-  // Check file size (max 50MB)
+  // Check file size (max 50MB) - early return
   const maxSize = 50 * 1024 * 1024; // 50MB
   if (file.size > maxSize) {
     return {
@@ -178,7 +186,7 @@ export const validateAudioFile = (file: File): ValidationResult => {
     };
   }
   
-  // Check minimum size (at least 1KB)
+  // Check minimum size (at least 1KB) - early return
   if (file.size < 1024) {
     return {
       isValid: false,

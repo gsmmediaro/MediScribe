@@ -1,22 +1,23 @@
 // @/components/ProcessingProgress.tsx
 // Premium loading experience with step-by-step progress indicators
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
+
+// Move steps outside component to prevent recreation on every render
+const PROCESSING_STEPS = [
+  { id: 0, label: '📤 Trimitere audio...', duration: 2 },
+  { id: 1, label: '🎧 Transcriere Deepgram...', duration: 25 },
+  { id: 2, label: '🤖 Analiză AI & SOAP...', duration: 20 },
+  { id: 3, label: '💊 Verificare medicamente...', duration: 40 },
+  { id: 4, label: '🔍 Detectare interacțiuni...', duration: 30 },
+  { id: 5, label: '📊 Salvare date...', duration: 10 },
+  { id: 6, label: '✅ Finalizare...', duration: 3 },
+] as const;
 
 const ProcessingProgress: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
   const [elapsedTime, setElapsedTime] = useState(0);
-
-  const steps = [
-    { id: 0, label: '📤 Trimitere audio...', duration: 2 },
-    { id: 1, label: '🎧 Transcriere Deepgram...', duration: 25 },
-    { id: 2, label: '🤖 Analiză AI & SOAP...', duration: 20 },
-    { id: 3, label: '💊 Verificare medicamente...', duration: 40 },
-    { id: 4, label: '🔍 Detectare interacțiuni...', duration: 30 },
-    { id: 5, label: '📊 Salvare date...', duration: 10 },
-    { id: 6, label: '✅ Finalizare...', duration: 3 },
-  ];
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -26,8 +27,14 @@ const ProcessingProgress: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
+  // Memoize total duration to avoid recalculation
+  const totalDuration = useMemo(() => 
+    PROCESSING_STEPS.reduce((sum, step) => sum + step.duration, 0), 
+    []
+  );
+
   useEffect(() => {
-    const stepDurations = steps.map(s => s.duration);
+    const stepDurations = PROCESSING_STEPS.map(s => s.duration);
     let accumulated = 0;
 
     for (let i = 0; i < stepDurations.length; i++) {
@@ -39,8 +46,11 @@ const ProcessingProgress: React.FC = () => {
     }
   }, [elapsedTime]);
 
-  const totalDuration = steps.reduce((sum, step) => sum + step.duration, 0);
-  const progress = Math.min((elapsedTime / totalDuration) * 100, 95); // Cap at 95%
+  // Memoize progress calculation
+  const progress = useMemo(() => 
+    Math.min((elapsedTime / totalDuration) * 100, 95),
+    [elapsedTime, totalDuration]
+  );
 
   return (
     <motion.div
@@ -86,7 +96,7 @@ const ProcessingProgress: React.FC = () => {
 
         {/* Steps */}
         <div className="space-y-3">
-          {steps.map((step, idx) => (
+          {PROCESSING_STEPS.map((step, idx) => (
             <motion.div
               key={step.id}
               initial={{ opacity: 0, x: -20 }}

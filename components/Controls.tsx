@@ -1,6 +1,6 @@
 // @/components/Controls.tsx
 
-import React from 'react';
+import React, { memo } from 'react';
 // Am adăugat UploadCloudIcon
 import { MicIcon, StopCircleIcon, BrainCircuitIcon, UploadCloudIcon } from './Icons';
 
@@ -12,7 +12,7 @@ interface ControlsProps {
   onUploadClick: () => void; // Prop nou pentru a declanșa upload-ul
 }
 
-const Controls: React.FC<ControlsProps> = ({ 
+const Controls: React.FC<ControlsProps> = memo(({ 
     isRecording, 
     isLoading, 
     onStart, 
@@ -74,6 +74,8 @@ const Controls: React.FC<ControlsProps> = ({
         )}
     </div>
   );
-};
+});
+
+Controls.displayName = 'Controls';
 
 export default Controls;
