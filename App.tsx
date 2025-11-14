@@ -46,13 +46,12 @@ const App: React.FC = () => {
 
   const handleStartTranscription = useCallback(async () => {
     setValidationError(null);
-    clearRecorderError();
 
     // Validate patient name
     const nameValidation = validatePatientName(patientName);
     if (!nameValidation.isValid) {
       setValidationError(nameValidation.error || 'Nume invalid');
-      return;
+      return false;
     }
 
     // Validate CNP if provided
@@ -60,8 +59,18 @@ const App: React.FC = () => {
       const cnpValidation = validateCNP(patientCnp);
       if (!cnpValidation.isValid) {
         setValidationError(cnpValidation.error || 'CNP invalid');
-        return;
+        return false;
       }
+    }
+
+    return true;
+  };
+
+  const handleStartTranscription = async () => {
+    clearRecorderError();
+
+    if (!validatePatientInfo()) {
+      return;
     }
 
     await startRecording();
@@ -91,24 +100,9 @@ const App: React.FC = () => {
       return;
     }
 
-    setValidationError(null);
-
-    // Validate patient name
-    const nameValidation = validatePatientName(patientName);
-    if (!nameValidation.isValid) {
-      setValidationError(nameValidation.error || 'Nume invalid');
+    if (!validatePatientInfo()) {
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
-    }
-
-    // Validate CNP if provided
-    if (patientCnp.trim()) {
-      const cnpValidation = validateCNP(patientCnp);
-      if (!cnpValidation.isValid) {
-        setValidationError(cnpValidation.error || 'CNP invalid');
-        if (fileInputRef.current) fileInputRef.current.value = '';
-        return;
-      }
     }
 
     // Validate audio file

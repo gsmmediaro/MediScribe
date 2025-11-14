@@ -27,6 +27,26 @@ type EditableResult = {
   alerteMedicale?: string[];
 };
 
+// Helper function to create editable result from analysis result
+const createEditableResult = (result: AnalysisResult): EditableResult => ({
+  rezumat: result.rezumat || '',
+  raportSOAP: {
+    Subiectiv: result.raportSOAP?.Subiectiv || '',
+    Obiectiv: result.raportSOAP?.Obiectiv || '',
+    Analiza: result.raportSOAP?.Analiza || '',
+    Plan: result.raportSOAP?.Plan || '',
+  },
+  diagnosticePosibile: Array.isArray(result.diagnosticePosibile) ? [...result.diagnosticePosibile] : [],
+  coduriICD10Sugerate: Array.isArray(result.coduriICD10Sugerate) ? [...result.coduriICD10Sugerate] : [],
+  pasiUrmatori: Array.isArray(result.pasiUrmatori) ? [...result.pasiUrmatori] : [],
+  reteta: {
+    medicatie: Array.isArray(result.reteta?.medicatie) ? [...result.reteta.medicatie] : [],
+    instructiuni: result.reteta?.instructiuni || '',
+    numeDoctor: result.reteta?.numeDoctor || '',
+  },
+  alerteMedicale: Array.isArray(result.alerteMedicale) ? [...result.alerteMedicale] : [],
+});
+
 const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onReset }) => {
   const [activeTab, setActiveTab] = useState<Tab>('raport');
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
@@ -51,6 +71,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
     },
     alerteMedicale: Array.isArray(result.alerteMedicale) ? [...result.alerteMedicale] : [],
   });
+  const [editableResult, setEditableResult] = useState<EditableResult>(() => createEditableResult(result));
 
   // Use useCallback to memoize the input change handler
   const handleInputChange = useCallback((
@@ -90,24 +111,7 @@ const AnalysisView: React.FC<AnalysisViewProps> = ({ result, rawTranscript, onRe
     if (savedSignature) {
       setSignature(savedSignature);
     }
-    setEditableResult({
-      rezumat: result.rezumat || '',
-      raportSOAP: {
-        Subiectiv: result.raportSOAP?.Subiectiv || '',
-        Obiectiv: result.raportSOAP?.Obiectiv || '',
-        Analiza: result.raportSOAP?.Analiza || '',
-        Plan: result.raportSOAP?.Plan || '',
-      },
-      diagnosticePosibile: Array.isArray(result.diagnosticePosibile) ? [...result.diagnosticePosibile] : [],
-      coduriICD10Sugerate: Array.isArray(result.coduriICD10Sugerate) ? [...result.coduriICD10Sugerate] : [],
-      pasiUrmatori: Array.isArray(result.pasiUrmatori) ? [...result.pasiUrmatori] : [],
-      reteta: {
-        medicatie: Array.isArray(result.reteta?.medicatie) ? [...result.reteta.medicatie] : [],
-        instructiuni: result.reteta?.instructiuni || '',
-        numeDoctor: result.reteta?.numeDoctor || '',
-      },
-      alerteMedicale: Array.isArray(result.alerteMedicale) ? [...result.alerteMedicale] : [],
-    });
+    setEditableResult(createEditableResult(result));
   }, [result]);
 
   // Memoize computed values
